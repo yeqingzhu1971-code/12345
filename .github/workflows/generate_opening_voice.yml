@@ -1,0 +1,55 @@
+name: Generate Opening Voice Assets
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/generate_opening_voice.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  voice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install voice tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install edge-tts
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Generate Mandarin character voices
+        run: |
+          mkdir -p voice
+          edge-tts --voice zh-CN-YunxiNeural --rate=-11% --pitch=-8Hz --text '希思罗机场的落地玻璃蒙着细密的雨痕。铅灰色的云压得很低，把上午十点的天光浸得像傍晚。' --write-media voice/m01.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-10% --pitch=-8Hz --text '这是我来英国读博的第二年。秋季学期刚过一个月，我又要回北京。' --write-media voice/m02.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-10% --pitch=-8Hz --text '博士组会，公司，会议。三个时区，被排进同一张日程表。' --write-media voice/m03.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-11% --pitch=-8Hz --text '屏幕上还停着家族群里那些体面又锋利的话。我只是想随便看点什么，让脑子安静一会儿。' --write-media voice/m04.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-9% --pitch=-7Hz --text '下一秒，手机里明晃晃的阳光，先撞进了眼里。' --write-media voice/m05.mp3
+          edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+9% --pitch=+6Hz --text '主席，等一下！' --write-media voice/friend.mp3
+          edge-tts --voice zh-CN-XiaoyiNeural --rate=+8% --pitch=+10Hz --text '来了！' --write-media voice/female.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-10% --pitch=-7Hz --text '穿着洗得发白的练功服的女孩猛地回过头。额前碎发被汗湿，梨窝陷得很深，笑得眼睛弯成两弯月牙。' --write-media voice/m06.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-11% --pitch=-8Hz --text '我把那段视频看了三遍。' --write-media voice/m07.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-10% --pitch=-7Hz --text '你知道吗？你笑起来的时候，好像一个明星。' --write-media voice/m08.mp3
+          edge-tts --voice en-GB-SoniaNeural --rate=-5% --pitch=+0Hz --text 'Emirates flight E K zero zero two to Dubai is now boarding First and Business Class passengers.' --write-media voice/airport.mp3
+          edge-tts --voice zh-CN-YunxiNeural --rate=-12% --pitch=-9Hz --text '我以为，最多只需要等一个晚上。后来才知道，这一等，是整整三百六十五天。' --write-media voice/m09.mp3
+      - name: Make audio manifest
+        run: |
+          python - <<'PY'
+          import json, glob, os, subprocess
+          out=[]
+          for p in sorted(glob.glob('voice/*.mp3')):
+              d=subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',p],text=True).strip()
+              out.append({'file':os.path.basename(p),'duration':float(d)})
+          open('voice/manifest.json','w').write(json.dumps(out,ensure_ascii=False,indent=2))
+          PY
+      - name: Upload voice assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-voice-assets-v02
+          path: voice/
+          retention-days: 30
