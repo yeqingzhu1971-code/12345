@@ -50,6 +50,8 @@ jobs:
           payload=text.split("PAYLOAD = '''",1)[1].split("'''",1)[0]
           code=gzip.decompress(base64.b64decode(payload)).decode('utf-8')
           code=code.replace('shirparent_keep(t,root)','parent_keep(shirt,root)')
+          code=code.replace("sc.render.engine='BLENDER_EEVEE_NEXT'", "sc.render.engine='BLENDER_WORKBENCH'")
+          code=code.replace("sc.render.resolution_x=960; sc.render.resolution_y=540", "sc.render.resolution_x=480; sc.render.resolution_y=270")
           compile(code,'build_opening_assets_fixed.py','exec')
           pathlib.Path('build_opening_assets_fixed.py').write_text(code)
           print('validated lines:', len(code.splitlines()))
