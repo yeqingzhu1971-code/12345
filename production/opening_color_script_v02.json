@@ -1,0 +1,47 @@
+{
+  "project": "AI short drama opening",
+  "version": "v02",
+  "global": {
+    "aspect_ratio": "16:9",
+    "color_space": "Rec.709",
+    "principle": "London is low-saturation neutral grey; Beijing is sunlit warm. The phone screen is the color bridge between the two worlds."
+  },
+  "london": {
+    "shots": [1, 2, 3, 4, 5, 6, 10, 11, 12],
+    "sky": "dense lead-grey overcast; no clear blue or cyan sky",
+    "saturation": 0.58,
+    "exposure_ev": -0.35,
+    "contrast": "soft-medium with compressed highlights",
+    "white_balance": "neutral-cool grey, never vivid blue",
+    "interior_practicals": {
+      "warm_light_energy_multiplier": 0.35,
+      "warm_light_saturation_multiplier": 0.45,
+      "rule": "small pools of dim practical light only; no amber wash"
+    },
+    "materials": "muted walnut, smoked glass, dark blue-grey carpet, brushed bronze with restrained reflections",
+    "emotion": "quiet pressure, fatigue, inner overcast"
+  },
+  "phone_transition": {
+    "shots": [7],
+    "rule": "London surroundings remain dark grey while the phone screen carries the first warm light",
+    "screen_warmth": 1.15,
+    "edge_saturation": 0.55,
+    "transition": "camera moves through the phone image; warm sunlight gradually replaces grey ambient light"
+  },
+  "beijing": {
+    "shots": [8, 9],
+    "sun": "soft early-autumn afternoon sunlight through studio windows",
+    "saturation": 1.08,
+    "exposure_ev": 0.18,
+    "highlight_warmth": 1.12,
+    "shadow_tint": "neutral, not orange",
+    "materials": "pale grey dance floor, mirror wall, wooden barre, golden foliage outside",
+    "emotion": "breath, vitality, openness; she becomes the light source in the story"
+  },
+  "continuity": {
+    "no_blue_london_sky": true,
+    "no_excess_amber_lounge": true,
+    "beijing_is_the_only_full_warm_palette": true,
+    "female_warm_light_may_reflect_in_male_glasses_after_phone_open": true
+  }
+}
