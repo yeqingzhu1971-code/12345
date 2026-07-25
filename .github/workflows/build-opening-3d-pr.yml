@@ -42,14 +42,33 @@ jobs:
           git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git vendor/mpfb2
           echo "MPFB_SRC=$PWD/vendor/mpfb2/src" >> "$GITHUB_ENV"
 
+      - name: Decode and validate build script
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, pathlib
+          text=pathlib.Path('build_opening_assets_loader.py').read_text()
+          payload=text.split("PAYLOAD = '''",1)[1].split("'''",1)[0]
+          code=gzip.decompress(base64.b64decode(payload)).decode('utf-8')
+          code=code.replace('shirparent_keep(t,root)','parent_keep(shirt,root)')
+          compile(code,'build_opening_assets_fixed.py','exec')
+          pathlib.Path('build_opening_assets_fixed.py').write_text(code)
+          print('validated lines:', len(code.splitlines()))
+          PY
+
       - name: Build 3D assets and 90-second timeline
         env:
           OUTPUT_DIR: ${{ github.workspace }}/output
           MPFB_SRC: ${{ github.workspace }}/vendor/mpfb2/src
         run: |
-          set -o pipefail
+          set -euo pipefail
           mkdir -p output
-          "$BLENDER_BIN" --background --factory-startup --python build_opening_assets_loader.py 2>&1 | tee output/blender_build.log
+          "$BLENDER_BIN" --background --factory-startup --python build_opening_assets_fixed.py 2>&1 | tee output/blender_build.log
+          test -s output/opening_master_90s_previs_v01.blend
+          test -s output/opening_master_90s_previs_v01.glb
+          test -s output/asset_manifest.json
+          test -s output/preview_lounge.png
+          test -s output/preview_bda.png
+          test -s output/preview_characters.png
 
       - name: Package deliverables
         if: always()
