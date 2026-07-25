@@ -1,0 +1,38 @@
+name: Build Opening Video Audio
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install audio tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          pip install edge-tts pydub
+      - name: Generate dialogue
+        run: python generate_opening_audio.py
+      - name: Validate
+        run: |
+          test -s audio_output/dialogue_track.wav
+          test -s audio_output/dialogue_manifest.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-video-dialogue-v01
+          path: audio_output/
+          retention-days: 30
+          compression-level: 0
