@@ -1,0 +1,77 @@
+name: Build Opening 3D Assets PR
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils curl git libxrender1 libxi6 libxkbcommon0 libsm6 libgl1
+
+      - name: Download Blender
+        run: |
+          set -euxo pipefail
+          URLS=(
+            "https://mirror.clarkson.edu/blender/release/Blender4.5/blender-4.5.9-linux-x64.tar.xz"
+            "https://download.blender.org/release/Blender4.5/blender-4.5.9-linux-x64.tar.xz"
+            "https://mirrors.nju.edu.cn/blender/release/Blender4.5/blender-4.5.9-linux-x64.tar.xz"
+          )
+          for url in "${URLS[@]}"; do
+            curl -fL --retry 4 --retry-delay 4 "$url" -o blender.tar.xz && break || true
+          done
+          test -s blender.tar.xz
+          tar -xf blender.tar.xz
+          BLENDER_BIN="$(find "$PWD" -maxdepth 3 -type f -name blender | head -n 1)"
+          test -x "$BLENDER_BIN"
+          echo "BLENDER_BIN=$BLENDER_BIN" >> "$GITHUB_ENV"
+
+      - name: Clone MPFB2
+        run: |
+          git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git vendor/mpfb2
+          echo "MPFB_SRC=$PWD/vendor/mpfb2/src" >> "$GITHUB_ENV"
+
+      - name: Build 3D assets and 90-second timeline
+        env:
+          OUTPUT_DIR: ${{ github.workspace }}/output
+          MPFB_SRC: ${{ github.workspace }}/vendor/mpfb2/src
+        run: |
+          set -o pipefail
+          mkdir -p output
+          "$BLENDER_BIN" --background --factory-startup --python build_opening_assets_loader.py 2>&1 | tee output/blender_build.log
+
+      - name: Package deliverables
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, zipfile
+          os.makedirs('output', exist_ok=True)
+          with zipfile.ZipFile('AI_Short_Drama_Opening_3D_Assets_v01.zip','w',zipfile.ZIP_DEFLATED,allowZip64=True) as z:
+              for dp,_,fs in os.walk('output'):
+                  for f in fs:
+                      p=os.path.join(dp,f)
+                      z.write(p,os.path.relpath(p,'output'))
+          PY
+
+      - name: Upload deliverables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Short-Drama-Opening-3D-Assets-v01
+          path: |
+            AI_Short_Drama_Opening_3D_Assets_v01.zip
+            output/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
