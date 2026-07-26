@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import shutil
+from pathlib import Path
+
+from gradio_client import Client, file
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+
+OUT = Path("ltx23_output")
+WORK = OUT / "work"
+OUT.mkdir(parents=True, exist_ok=True)
+WORK.mkdir(parents=True, exist_ok=True)
+
+EXPECTED_SIZE = 25981
+EXPECTED_SHA256 = "78c0e33a207347ac3332002171c3e579bf10c1178b95e33442e383758afb6510"
+
+parts = sorted(Path("assets").glob("shot01_ref_q45.part*.b64"))
+if len(parts) != 5:
+    raise RuntimeError(f"Expected 5 reference chunks, found {len(parts)}: {parts}")
+encoded = "".join(p.read_text(encoding="utf-8").strip() for p in parts)
+raw = base64.b64decode(encoded, validate=True)
+actual_sha = hashlib.sha256(raw).hexdigest()
+if len(raw) != EXPECTED_SIZE or actual_sha != EXPECTED_SHA256:
+    raise RuntimeError(
+        f"Reference integrity failure: size={len(raw)} sha256={actual_sha}; "
+        f"expected size={EXPECTED_SIZE} sha256={EXPECTED_SHA256}"
+    )
+source_path = WORK / "shot01_source_exact.jpg"
+source_path.write_bytes(raw)
+
+# Turn the wide public-lounge frame into a restrained, private four-seat visual zone.
+source = Image.open(source_path).convert("RGB")
+# 16:9 crop centred on Jiang Yan, the rain-streaked glass and A380.
+frame = source.crop((190, 55, 750, 370)).resize((1536, 864), Image.Resampling.LANCZOS)
+frame = ImageEnhance.Color(frame).enhance(0.43)
+frame = ImageEnhance.Brightness(frame).enhance(0.72)
+frame = ImageEnhance.Contrast(frame).enhance(1.13)
+
+# Cool lead-grey wash; preserve skin while suppressing amber lounge lighting.
+cool = Image.new("RGB", frame.size, (54, 66, 76))
+frame = Image.blend(frame, cool, 0.14)
+
+# Add out-of-focus smoked-glass / walnut foreground partitions to make the area private.
+overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+draw = ImageDraw.Draw(overlay)
+draw.rectangle((0, 0, 118, 864), fill=(12, 16, 19, 185))
+draw.rectangle((1418, 0, 1536, 864), fill=(12, 16, 19, 185))
+draw.rectangle((108, 0, 132, 864), fill=(41, 32, 27, 190))
+draw.rectangle((1404, 0, 1428, 864), fill=(41, 32, 27, 190))
+overlay = overlay.filter(ImageFilter.GaussianBlur(radius=6))
+frame = Image.alpha_composite(frame.convert("RGBA"), overlay).convert("RGB")
+
+# Gentle cinematic vignette, avoiding a bright lobby impression.
+vignette = Image.new("L", frame.size, 0)
+vd = ImageDraw.Draw(vignette)
+vd.ellipse((-260, -160, 1796, 1120), fill=255)
+vignette = vignette.filter(ImageFilter.GaussianBlur(radius=155))
+dark = Image.new("RGB", frame.size, (8, 11, 14))
+frame = Image.composite(frame, dark, vignette)
+reference_path = WORK / "shot01_private_suite_reference.jpg"
+frame.save(reference_path, quality=96, subsampling=0)
+
+PROMPT = """
+Single uninterrupted live-action cinematic shot. Preserve the exact East Asian male identity, facial proportions, black side-parted hair, thin gold wire-frame glasses, matte black shirt, dark trousers, seated pose, phone, armchair, rain-streaked glazing and A380 placement from the reference image. He is Jiang Yan, 28, restrained and steady on the outside, privately anxious and tired. The lounge must read as a very private semi-enclosed first-class quiet suite with only four seats, tall smoked-glass and walnut partitions, dark stone and muted bronze details; never a large public hall. He remains seated. Animate subtle breathing, a natural blink, a tiny shift of focus down to the phone, one controlled thumb movement, and a slight tightening of the jaw. Rainwater continuously trails down the glass. Two distant airport service vehicles move slowly behind him and the parked A380 remains stable. The camera performs an extremely slow, perfectly stable dolly-in from medium-wide to medium, no cuts. Dense lead-grey Heathrow sky, low saturation, cool overcast illumination, almost no warm light, only a dim distant practical lamp. Realistic skin pores, coherent hands, stable glasses, natural cloth movement, physically plausible temporal motion, premium restrained Chinese romantic drama, 35 mm lens, shallow depth of field. No speech, no narration, no subtitles, no screen text, no logo.
+""".strip()
+
+client = Client("Lightricks/LTX-2-3", verbose=True)
+result = client.predict(
+    input_image=file(str(reference_path)),
+    prompt=PROMPT,
+    duration=5.0,
+    enhance_prompt=False,
+    seed=728310,
+    randomize_seed=False,
+    height=864,
+    width=1536,
+    api_name="/generate_video",
+)
+video_path, used_seed = result
+if isinstance(video_path, dict):
+    source_video = video_path.get("path") or video_path.get("video")
+else:
+    source_video = str(video_path)
+if not source_video:
+    raise RuntimeError(f"No video returned: {result!r}")
+
+destination = OUT / "shot01_heathrow_private_suite_ltx23.mp4"
+shutil.copy2(Path(source_video), destination)
+manifest = {
+    "generator": "Lightricks/LTX-2-3",
+    "endpoint": "/generate_video",
+    "input_sha256": EXPECTED_SHA256,
+    "seed": used_seed,
+    "duration_seconds": 5.0,
+    "resolution": [1536, 864],
+    "reference": reference_path.name,
+    "video": destination.name,
+    "prompt": PROMPT,
+}
+(OUT / "manifest.json").write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+)
+print(json.dumps(manifest, ensure_ascii=False, indent=2))
