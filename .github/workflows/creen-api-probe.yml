@@ -1,0 +1,92 @@
+name: Probe Creen Generation API
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install browser tools
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+      - name: Capture upload and generation API requests
+        run: |
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import asyncio, json, time
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          PROMPT='Cinematic live-action: revised young Chinese female dancer in an authentic Beijing Dance Academy ethnic folk dance classroom, blue-grey professional dance vinyl, white suspended ceiling panels, rectangular lights, beige curtains, wooden barres and lower wall panels. She finishes rehearsal, breathes, blinks once, turns naturally toward camera and smiles. Warm restrained side-back autumn sunlight, stable slow dolly-in, full colour, coherent face, no text, no watermark, no slideshow.'
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+              context=await browser.new_context(viewport={'width':1440,'height':1050},locale='en-US')
+              page=await context.new_page()
+              reqs=[]; resps=[]
+              async def on_req(req):
+                u=req.url.lower()
+                if '/api/' in u or any(k in u for k in ['upload','generate','task','video']):
+                  reqs.append({'method':req.method,'url':req.url,'headers':req.headers,'post_data':req.post_data})
+              async def on_resp(resp):
+                u=resp.url.lower();ct=(resp.headers.get('content-type') or '').lower()
+                if '/api/' in u or any(k in u for k in ['upload','generate','task','video']):
+                  rec={'status':resp.status,'url':resp.url,'headers':resp.headers}
+                  if 'json' in ct:
+                    try:rec['json']=await resp.json()
+                    except Exception as e:rec['json_error']=repr(e)
+                  else:
+                    try:rec['text']=(await resp.text())[:10000]
+                    except Exception as e:rec['text_error']=repr(e)
+                  resps.append(rec)
+              page.on('request',lambda r:asyncio.create_task(on_req(r)))
+              page.on('response',lambda r:asyncio.create_task(on_resp(r)))
+              page.on('console',lambda m:print('CONSOLE',m.type,m.text))
+              page.on('pageerror',lambda e:print('PAGEERROR',e))
+              await page.goto('https://www.creen.ai/image-to-video',wait_until='networkidle',timeout=120000)
+              await page.wait_for_timeout(7000)
+              await page.locator('input[type=file]').first.set_input_files('assets/female_ref.jpg')
+              await page.locator('textarea[placeholder="Describe what you want to create"]').fill(PROMPT)
+              await page.wait_for_timeout(4000)
+              submit=page.locator("xpath=//button[.//*[name()='path' and starts-with(@d,'M12 20V4')]]").last
+              for i in range(90):
+                if not await submit.is_disabled():break
+                await page.wait_for_timeout(1000)
+              print('submit disabled',await submit.is_disabled())
+              await page.screenshot(path='output/ready.png',full_page=True)
+              if await submit.is_disabled():raise RuntimeError('submit stayed disabled')
+              await submit.click()
+              print('submitted')
+              await page.wait_for_timeout(30000)
+              await page.screenshot(path='output/after_submit.png',full_page=True)
+              Path('output/requests.json').write_text(json.dumps(reqs,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+              Path('output/responses.json').write_text(json.dumps(resps,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+              Path('output/cookies.json').write_text(json.dumps(await context.cookies(),ensure_ascii=False,indent=2),encoding='utf-8')
+              storage=await page.evaluate("() => ({local:{...localStorage},session:{...sessionStorage}})")
+              Path('output/storage.json').write_text(json.dumps(storage,ensure_ascii=False,indent=2),encoding='utf-8')
+              print('requests',json.dumps(reqs,ensure_ascii=False,indent=2,default=str)[-20000:])
+              print('responses',json.dumps(resps,ensure_ascii=False,indent=2,default=str)[-20000:])
+              await browser.close()
+          asyncio.run(main())
+          PY
+      - name: Upload probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: creen-api-probe-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
