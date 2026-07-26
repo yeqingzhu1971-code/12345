@@ -19,13 +19,26 @@ jobs:
           python-version: '3.11'
       - name: Install browser tools
         run: |
-          pip install playwright
+          pip install playwright requests
           playwright install --with-deps chromium
+      - name: Restore the revised heroine reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os,base64,requests
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          r=requests.get(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',headers={'Authorization':f'Bearer {os.environ["GH_TOKEN"]}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},timeout=60)
+          print(r.status_code,len(r.content));r.raise_for_status();d=r.json()
+          raw=base64.b64decode(d['content']);open('female_ref.jpg','wb').write(raw);print('reference bytes',len(raw))
+          PY
+          file female_ref.jpg
+          test -s female_ref.jpg
       - name: Capture upload and generation API requests
         run: |
           mkdir -p output
           python - <<'PY' 2>&1 | tee output/probe.log
-          import asyncio, json, time
+          import asyncio, json
           from pathlib import Path
           from playwright.async_api import async_playwright
 
@@ -58,7 +71,7 @@ jobs:
               page.on('pageerror',lambda e:print('PAGEERROR',e))
               await page.goto('https://www.creen.ai/image-to-video',wait_until='networkidle',timeout=120000)
               await page.wait_for_timeout(7000)
-              await page.locator('input[type=file]').first.set_input_files('assets/female_ref.jpg')
+              await page.locator('input[type=file]').first.set_input_files('female_ref.jpg')
               await page.locator('textarea[placeholder="Describe what you want to create"]').fill(PROMPT)
               await page.wait_for_timeout(4000)
               submit=page.locator("xpath=//button[.//*[name()='path' and starts-with(@d,'M12 20V4')]]").last
