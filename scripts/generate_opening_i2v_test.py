@@ -7,7 +7,9 @@ import shutil
 from pathlib import Path
 
 from gradio_client import Client, file
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 OUT = Path("video_i2v_output")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -17,7 +19,6 @@ WORK.mkdir(parents=True, exist_ok=True)
 # Decode the compact approved visual reference stored in the repository.
 encoded = Path("assets/shot01_ref_q20.b64").read_text(encoding="utf-8")
 encoded = re.sub(r"[^A-Za-z0-9+/=]", "", encoded)
-# The connector can append duplicate trailing text after the first padded payload.
 if "==" in encoded:
     encoded = encoded.split("==", 1)[0] + "=="
 elif "=" in encoded:
@@ -26,7 +27,9 @@ raw_path = WORK / "shot01_raw.jpg"
 raw_path.write_bytes(base64.b64decode(encoded, validate=False))
 
 # Reframe the lounge as a quiet four-seat suite instead of an open hall.
-image = Image.open(raw_path).convert("RGB")
+with Image.open(raw_path) as source_image:
+    source_image.load()
+    image = source_image.convert("RGB")
 image = image.crop((62, 0, 578, 360)).resize((1024, 576), Image.Resampling.LANCZOS)
 image = ImageEnhance.Color(image).enhance(0.55)
 image = ImageEnhance.Brightness(image).enhance(0.78)
