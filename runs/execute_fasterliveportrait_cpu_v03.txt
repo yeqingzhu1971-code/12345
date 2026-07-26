@@ -1,0 +1,1 @@
+Execute the fully CPU-patched revised-heroine motion test and upload the verified MP4 artifact.
