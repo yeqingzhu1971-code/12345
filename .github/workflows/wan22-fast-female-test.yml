@@ -1,0 +1,99 @@
+name: Wan22 Fast Female Motion Test
+
+on:
+  push:
+    branches: [wan22-fast-female-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install -U gradio_client
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Restore heroine reference
+        run: |
+          python - <<'PY'
+          import base64,json,urllib.request
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r: d=json.load(r)
+          raw=base64.b64decode(d['content']); open('female_ref.jpg','wb').write(raw); print(len(raw))
+          PY
+          test -s female_ref.jpg
+      - name: Generate real-motion clip with Wan 2.2 14B Fast
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+          token=os.environ.get('HF_TOKEN') or None
+          print('authenticated:', bool(token))
+          client=Client('zerogpu-aoti/wan2-2-fp8da-aoti-faster', hf_token=token)
+          api=client.view_api(return_format='dict')
+          Path('output/api.json').write_text(json.dumps(api,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+          prompt=(
+            'Cinematic live-action, one continuous shot, warm early-autumn afternoon in a professional Beijing dance academy rehearsal studio. '
+            'Preserve the exact identity, facial proportions, large expressive eyes, hair bun, natural skin tone and black practice clothes of the young Chinese female dancer in the reference image. '
+            'She has just finished a demanding rehearsal. Natural subtle breathing in shoulders and chest; she blinks once. A classmate calls her from behind the camera. '
+            'She pauses for a fraction of a second, then turns her head naturally toward camera and gives a spontaneous bright smile with small dimples. '
+            'A few background dancers continue slow rehearsal movements in soft focus. Warm side-back sunlight through tall windows catches a few sweat-damp loose hair strands. '
+            'Extremely slow stable dolly-in, coherent face, eyes, mouth and hands, physically plausible motion, realistic cloth and hair movement, natural skin texture, shallow depth of field, full colour, no speech, no subtitles, no text, no watermark.'
+          )
+          negative=('identity change, face morphing, deformed eyes, crossed eyes, asymmetrical face, warped mouth, extra teeth, extra fingers, fused fingers, duplicated person, '
+                    'plastic skin, beauty filter, overexposure, excessive orange, black and white, flicker, jitter, frozen image, slideshow, zoom-only motion, fast camera, speaking, captions, logo, watermark, blurry face, low detail')
+          result=client.predict(
+            handle_file('female_ref.jpg'), prompt, 8, negative, 3.5, 1.0, 1.0, 20260726, False,
+            api_name='/generate_video'
+          )
+          print('result:',result)
+          Path('output/result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+          def path_of(x):
+            if isinstance(x,str) and os.path.exists(x): return x
+            if isinstance(x,dict):
+              p=x.get('path')
+              if isinstance(p,str) and os.path.exists(p): return p
+              for v in x.values():
+                p=path_of(v)
+                if p:return p
+            if isinstance(x,(list,tuple)):
+              for v in x:
+                p=path_of(v)
+                if p:return p
+            return None
+          p=path_of(result)
+          if not p: raise RuntimeError(f'No video path: {result!r}')
+          shutil.copy2(p,'output/female_turn_smile_wan22_source.mp4')
+          PY
+      - name: Produce 1080p review master and QC
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_wan22_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_turn_smile_wan22_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.20:5:5:0.0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_turn_smile_wan22_review_1080p.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_wan22_review_1080p.mp4 | tee output/review_ffprobe.json
+          ffmpeg -y -i output/female_turn_smile_wan22_source.mp4 -vf "select='eq(n,0)+eq(n,16)+eq(n,32)+eq(n,48)',scale=480:-1,tile=4x1" -frames:v 1 output/contact.jpg
+          test -s output/female_turn_smile_wan22_review_1080p.mp4
+      - name: Upload clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan22-female-motion-review-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
