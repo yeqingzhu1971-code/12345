@@ -1,12 +1,8 @@
 name: Generate Opening Chunk 01 Wan 2.1
 
 on:
-  push:
-    branches: [opening-chunk-01-wan21-v01]
-    paths:
-      - 'assets/chunk01_ref.b64'
-      - 'scripts/generate_chunk01_wan21.py'
-      - '.github/workflows/generate-opening-chunk01.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
