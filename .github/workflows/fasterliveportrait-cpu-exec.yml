@@ -1,0 +1,120 @@
+name: Execute FasterLivePortrait CPU Sample
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install system and Python dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libgl1 libglib2.0-0 git
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchvision==0.18.1
+          pip install "numpy<2" onnx==1.16.2 onnxruntime==1.18.1 opencv-python-headless==4.10.0.84 omegaconf scikit-image insightface==0.7.3 "huggingface_hub[cli]" mediapipe==0.10.14 torchgeometry soundfile munch tqdm colorama ffmpeg-python
+      - name: Clone FasterLivePortrait, patch CPU support, and download human ONNX models
+        run: |
+          git clone --depth 1 https://github.com/warmshao/FasterLivePortrait.git flp
+          python - <<'PY'
+          from pathlib import Path
+          cpu_block="""        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+            self.cudaStream = torch.cuda.current_stream().cuda_stream
+        else:
+            self.device = torch.device('cpu')
+            self.cudaStream = None
+"""
+          for fn in ['flp/src/models/base_model.py','flp/src/models/face_analysis_model.py']:
+            p=Path(fn);s=p.read_text()
+            s=s.replace('        self.device = torch.cuda.current_device()\n        self.cudaStream = torch.cuda.current_stream().cuda_stream\n',cpu_block)
+            p.write_text(s)
+          p=Path('flp/src/models/predictor.py')
+          s=p.read_text().replace("providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']", "providers = ['CPUExecutionProvider']")
+          s=s.replace('# opts.inter_op_num_threads = kwargs.get("num_threads", 4)', 'opts.inter_op_num_threads = kwargs.get("num_threads", 2)')
+          s=s.replace('# opts.intra_op_num_threads = kwargs.get("num_threads", 4)', 'opts.intra_op_num_threads = kwargs.get("num_threads", 4)')
+          p.write_text(s)
+          PY
+          cd flp
+          hf download warmshao/FasterLivePortrait --include "liveportrait_onnx/*" --local-dir checkpoints
+          find checkpoints/liveportrait_onnx -maxdepth 1 -type f -printf '%f %s bytes\n' | sort | tee ../model_files.txt
+          test -s checkpoints/liveportrait_onnx/warping_spade.onnx
+          test -s checkpoints/liveportrait_onnx/motion_extractor.onnx
+      - name: Restore revised heroine and prepare a short natural driver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os,base64,requests
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          r=requests.get(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',headers={'Authorization':f'Bearer {os.environ["GH_TOKEN"]}','Accept':'application/vnd.github+json'},timeout=60)
+          r.raise_for_status();open('female_ref.jpg','wb').write(base64.b64decode(r.json()['content']))
+          PY
+          test -s female_ref.jpg
+          test -s flp/assets/examples/driving/d0.mp4
+          ffmpeg -y -i flp/assets/examples/driving/d0.mp4 -t 2.2 -vf "fps=12,scale=512:-2:flags=lanczos" -an driver_short.mp4
+          ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames:format=duration,size -of json driver_short.mp4 | tee driver_ffprobe.json
+      - name: Run real frame-by-frame portrait inference on CPU
+        run: |
+          set -o pipefail
+          mkdir -p output
+          cp female_ref.jpg flp/female_ref.jpg
+          cp driver_short.mp4 flp/driver_short.mp4
+          cd flp
+          python - <<'PY'
+          from omegaconf import OmegaConf
+          p='configs/onnx_infer.yaml'
+          c=OmegaConf.load(p)
+          c.infer_params.flag_pasteback=True
+          c.infer_params.flag_stitching=True
+          c.infer_params.flag_relative_motion=True
+          c.infer_params.flag_normalize_lip=True
+          c.infer_params.source_max_dim=512
+          OmegaConf.save(c,p)
+          PY
+          timeout 14400s python run.py --src_image female_ref.jpg --dri_video driver_short.mp4 --cfg configs/onnx_infer.yaml --paste_back 2>&1 | tee ../output/inference.log
+          find results -type f -name '*-org.mp4' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2- > ../output/result_path.txt
+          RESULT="$(cat ../output/result_path.txt)"
+          test -s "$RESULT"
+          cp "$RESULT" ../output/female_bda_liveportrait_cpu_source.mp4
+      - name: Validate true motion and export 1080p review
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_bda_liveportrait_cpu_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_bda_liveportrait_cpu_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.10:5:5:0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_bda_liveportrait_cpu_review_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          p='output/female_bda_liveportrait_cpu_source.mp4';c=cv2.VideoCapture(p);g=[];colour=[]
+          while True:
+            ok,f=c.read()
+            if not ok:break
+            g.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY));colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(g)<12:raise SystemExit(f'too few frames: {len(g)}')
+          d=np.array([np.mean(cv2.absdiff(g[i],g[i-1])) for i in range(1,len(g))]);q={'frames':len(g),'mean_diff':float(d.mean()),'motion_ratio':float((d>.5).mean()),'colour_proxy':float(np.mean(colour))};print(q);open('output/qc.json','w').write(json.dumps(q,indent=2))
+          if q['motion_ratio']<.45:raise SystemExit('rejected as mostly static')
+          if q['colour_proxy']<3:raise SystemExit('rejected as monochrome')
+          PY
+          ffmpeg -y -i output/female_bda_liveportrait_cpu_source.mp4 -vf "fps=3,scale=360:-1,tile=6x1" -frames:v 1 output/contact.jpg || true
+          test -s output/female_bda_liveportrait_cpu_review_1080p.mp4
+      - name: Upload genuine motion sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fasterliveportrait-cpu-female-exec-v01
+          path: |
+            output/
+            model_files.txt
+            driver_ffprobe.json
+          retention-days: 7
+          compression-level: 0
