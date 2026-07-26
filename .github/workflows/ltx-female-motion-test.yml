@@ -1,0 +1,117 @@
+name: LTX Female Motion Test
+
+on:
+  push:
+    branches: [ltx-female-motion-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install -U gradio_client
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Restore revised heroine reference
+        run: |
+          python - <<'PY'
+          import base64, json, urllib.request
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          url=f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}'
+          with urllib.request.urlopen(url) as r:
+              data=json.load(r)
+          raw=base64.b64decode(data['content'])
+          open('female_ref.jpg','wb').write(raw)
+          print('reference bytes', len(raw))
+          PY
+          test -s female_ref.jpg
+      - name: Generate true-motion 16:9 heroine shot on LTX Video Fast
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/ltx_generation.log
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          prompt = (
+            'A single continuous cinematic live-action shot in a professional Beijing dance academy rehearsal studio during a warm early-autumn afternoon. '
+            'Preserve the exact identity, facial proportions, large expressive eyes, hairstyle and black dance practice clothing of the young East Asian female dancer in the reference image. '
+            'She has just finished rehearsal. She breathes naturally, blinks once, hears a classmate call from behind camera, then gently turns her head toward camera and gives a bright spontaneous smile with small dimples. '
+            'Background dancers continue slow rehearsal movements in soft focus. Warm side-back sunlight passes through tall windows and catches a few sweat-damp loose hair strands. '
+            'Very slow stable dolly-in, natural skin texture, coherent face, realistic cloth movement, subtle shoulder breathing, physically plausible motion, cinematic shallow depth of field, full colour, no text.'
+          )
+          negative = (
+            'identity change, face morphing, deformed eyes, asymmetrical eyes, warped mouth, extra teeth, extra fingers, duplicated person, '
+            'rubber skin, plastic skin, beauty filter, overexposure, excessive orange, black and white, flicker, jitter, frozen image, slideshow, zoom-only motion, '
+            'fast camera, speaking, text, captions, logo, watermark, blurry face'
+          )
+          client = Client('Lightricks/ltx-video-distilled')
+          result = client.predict(
+              prompt,
+              negative,
+              handle_file('female_ref.jpg'),
+              None,
+              512,
+              896,
+              'image-to-video',
+              3.0,
+              9,
+              20260726,
+              False,
+              1.0,
+              False,
+              api_name='/image_to_video'
+          )
+          print('result:', result)
+          Path('output/result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+
+          def find_path(x):
+              if isinstance(x, str) and os.path.exists(x): return x
+              if isinstance(x, dict):
+                  if 'video' in x:
+                      p=find_path(x['video'])
+                      if p: return p
+                  if 'path' in x and isinstance(x['path'],str) and os.path.exists(x['path']): return x['path']
+                  for v in x.values():
+                      p=find_path(v)
+                      if p: return p
+              if isinstance(x,(list,tuple)):
+                  for v in x:
+                      p=find_path(v)
+                      if p: return p
+              return None
+          p=find_path(result)
+          if not p: raise RuntimeError(f'No local video path in result: {result!r}')
+          shutil.copy2(p,'output/female_turn_smile_ltx_source.mp4')
+          print('saved',p)
+          PY
+      - name: Create high-bitrate 1080p review master
+        run: |
+          set -euo pipefail
+          ffmpeg -y -i output/female_turn_smile_ltx_source.mp4 \
+            -vf "scale=1920:1080:flags=lanczos,unsharp=5:5:0.30:5:5:0.0,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 14 -movflags +faststart -an \
+            output/female_turn_smile_review_1080p.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_review_1080p.mp4 | tee output/ffprobe.json
+          test -s output/female_turn_smile_review_1080p.mp4
+      - name: Upload review clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ltx-female-turn-smile-review-v02
+          path: output/
+          retention-days: 7
+          compression-level: 0
