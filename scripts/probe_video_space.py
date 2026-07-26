@@ -11,6 +11,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 SPACES = [
     "Lightricks/ltx-video-distilled",
+    "Lightricks/ltx-2-3-spatial-upscaler",
     "Wan-AI/Wan2.2-S2V",
 ]
 
