@@ -43,10 +43,14 @@ jobs:
           from pathlib import Path
           from gradio_client import Client,handle_file
 
-          client=Client('KwaiVGI/LivePortrait',verbose=True)
+          client=Client('KlingTeam/LivePortrait',verbose=True)
+          driving={
+            'video': handle_file('liveportrait_repo/assets/examples/driving/d0.mp4'),
+            'subtitles': None,
+          }
           result=client.predict(
             handle_file('female_ref.jpg'),
-            handle_file('liveportrait_repo/assets/examples/driving/d0.mp4'),
+            driving,
             True,
             True,
             True,
@@ -88,7 +92,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liveportrait-female-motion-v01
+          name: liveportrait-female-motion-v02
           path: output/
           retention-days: 7
           compression-level: 0
