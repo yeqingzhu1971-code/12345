@@ -1,0 +1,92 @@
+name: Recover VideoPlus Generated Task
+
+on:
+  push:
+    branches: [videoplus-browser-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install requests
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Poll task and recover generated media
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/recover.log
+          import json, os, re, time
+          from pathlib import Path
+          import requests
+
+          TASK='051c82a7a76a4517996a29f5fdc29bf9'
+          s=requests.Session()
+          s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://videoplus.ai/'})
+          endpoints=[
+            f'https://videoplus.ai/api/aigc/video/free-video-generation/get_execution_time?task_id={TASK}',
+            f'https://videoplus.ai/api/aigc/video/free-video-generation/get-task?task_id={TASK}',
+            f'https://videoplus.ai/api/aigc/video/free-video-generation/get-result?task_id={TASK}',
+            f'https://videoplus.ai/api/aigc/video/video-generation/get-task?task_id={TASK}',
+            f'https://videoplus.ai/api/aigc/video/video-generation/get-detail?task_id={TASK}',
+          ]
+          all_res=[]
+          media=None
+          def walk(x):
+            global media
+            if isinstance(x,dict):
+              for k,v in x.items():
+                lk=k.lower()
+                if isinstance(v,str) and (v.startswith('http://') or v.startswith('https://')) and (any(t in lk for t in ['video','result','output','url','media']) or any(e in v.lower() for e in ['.mp4','.webm','.mov'])):
+                  if any(e in v.lower() for e in ['.mp4','.webm','.mov']) or 'result.videoplus.ai' in v:
+                    media=v
+                walk(v)
+            elif isinstance(x,list):
+              for v in x: walk(v)
+          for cycle in range(10):
+            for u in endpoints:
+              try:
+                r=s.get(u,timeout=30)
+                rec={'cycle':cycle,'url':u,'status':r.status_code,'headers':dict(r.headers),'text':r.text[:20000]}
+                print('\nURL',u,'STATUS',r.status_code,'\n',r.text[:10000])
+                try:
+                  j=r.json(); rec['json']=j; walk(j)
+                except Exception: pass
+                all_res.append(rec)
+              except Exception as e:
+                print('ERR',u,repr(e));all_res.append({'cycle':cycle,'url':u,'error':repr(e)})
+            Path('output/responses.json').write_text(json.dumps(all_res,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+            if media: break
+            time.sleep(30)
+          print('media',media)
+          if media:
+            r=s.get(media,timeout=180)
+            print('media status',r.status_code,'ct',r.headers.get('content-type'),'bytes',len(r.content))
+            r.raise_for_status();Path('output/recovered_generated_video.mp4').write_bytes(r.content)
+          PY
+      - name: Validate recovered video
+        if: always()
+        run: |
+          if test -s output/recovered_generated_video.mp4; then
+            ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/recovered_generated_video.mp4 | tee output/ffprobe.json
+          fi
+      - name: Upload recovery report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videoplus-task-recovery-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
