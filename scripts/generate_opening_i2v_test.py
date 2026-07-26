@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -14,9 +15,15 @@ WORK = OUT / "work"
 WORK.mkdir(parents=True, exist_ok=True)
 
 # Decode the compact approved visual reference stored in the repository.
-encoded = Path("assets/shot01_ref_q20.b64").read_text(encoding="utf-8").strip()
+encoded = Path("assets/shot01_ref_q20.b64").read_text(encoding="utf-8")
+encoded = re.sub(r"[^A-Za-z0-9+/=]", "", encoded)
+# The connector can append duplicate trailing text after the first padded payload.
+if "==" in encoded:
+    encoded = encoded.split("==", 1)[0] + "=="
+elif "=" in encoded:
+    encoded = encoded.split("=", 1)[0] + "="
 raw_path = WORK / "shot01_raw.jpg"
-raw_path.write_bytes(base64.b64decode(encoded, validate=True))
+raw_path.write_bytes(base64.b64decode(encoded, validate=False))
 
 # Reframe the lounge as a quiet four-seat suite instead of an open hall.
 image = Image.open(raw_path).convert("RGB")
