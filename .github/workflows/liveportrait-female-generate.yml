@@ -1,0 +1,217 @@
+name: Generate LivePortrait Female Motion Clip
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tools
+        run: |
+          pip install -U gradio_client requests opencv-python-headless numpy Pillow
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg git
+
+      - name: Restore revised heroine and prepare a short official driving motion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os, base64, requests
+          from PIL import Image
+
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          r=requests.get(
+              f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',
+              headers={
+                  'Authorization':f'Bearer {os.environ["GH_TOKEN"]}',
+                  'Accept':'application/vnd.github+json',
+                  'X-GitHub-Api-Version':'2022-11-28',
+              },
+              timeout=60,
+          )
+          r.raise_for_status()
+          raw=base64.b64decode(r.json()['content'])
+          open('female_ref_original.jpg','wb').write(raw)
+          im=Image.open('female_ref_original.jpg').convert('RGB')
+          # Keep the full approved 16:9 frame and its existing BDA-like background.
+          im.resize((768,432),Image.Resampling.LANCZOS).save('female_ref.jpg',quality=96,subsampling=0)
+          print('source',im.size,'normalized',(768,432),'bytes',len(raw))
+          PY
+
+          git clone --depth 1 https://github.com/KlingAIResearch/LivePortrait.git liveportrait_repo
+          test -s liveportrait_repo/assets/examples/driving/d0.mp4
+          # A short, square, low-frame-count official driver keeps cloud inference inside ZeroGPU limits.
+          ffmpeg -y -i liveportrait_repo/assets/examples/driving/d0.mp4 \
+            -t 2.4 -vf "crop='min(iw,ih)':'min(iw,ih)',scale=256:256:flags=lanczos,fps=15" \
+            -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p driver_square.mp4
+          ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames,duration -of json driver_square.mp4
+          test -s female_ref.jpg
+          test -s driver_square.mp4
+
+      - name: Generate identity-preserving heroine motion on available LivePortrait Spaces
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import json, os, shutil, traceback
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          spaces=[
+              'yjjuy7/LivePortrait',
+              'KlingTeam/LivePortrait',
+              'KwaiVGI/LivePortrait',
+              'hmb/LivePortrait',
+          ]
+          errors=[]
+
+          def local_media_path(value):
+              if isinstance(value,str) and os.path.exists(value):
+                  return value
+              if isinstance(value,dict):
+                  for key in ('video','path','file','value'):
+                      if key in value:
+                          found=local_media_path(value[key])
+                          if found:return found
+                  for nested in value.values():
+                      found=local_media_path(nested)
+                      if found:return found
+              if isinstance(value,(list,tuple)):
+                  for nested in value:
+                      found=local_media_path(nested)
+                      if found:return found
+              return None
+
+          for space in spaces:
+              try:
+                  print('\n=== TRY SPACE',space,'===',flush=True)
+                  client=Client(space,verbose=True)
+                  api=client.view_api(all_endpoints=True,print_info=False,return_format='dict')
+                  Path(f'output/api_{space.replace("/","_")}.json').write_text(
+                      json.dumps(api,ensure_ascii=False,indent=2,default=str),encoding='utf-8'
+                  )
+                  endpoints=list((api.get('named_endpoints') or {}).keys())
+                  endpoint='/gpu_wrapped_execute_video' if '/gpu_wrapped_execute_video' in endpoints else None
+                  if endpoint is None:
+                      endpoint=next((x for x in endpoints if 'execute_video' in x or x.endswith('/animate')),None)
+                  if endpoint is None:
+                      raise RuntimeError(f'No portrait-video endpoint; endpoints={endpoints}')
+
+                  source=handle_file('female_ref.jpg')
+                  driver=handle_file('driver_square.mp4')
+                  variants=[
+                      {'video':driver,'subtitles':None},
+                      {'video':driver},
+                      driver,
+                  ]
+                  result=None
+                  variant_errors=[]
+                  for idx,video_input in enumerate(variants):
+                      try:
+                          print('calling',endpoint,'variant',idx,flush=True)
+                          result=client.predict(
+                              source,
+                              video_input,
+                              True,
+                              True,
+                              True,
+                              api_name=endpoint,
+                          )
+                          print('RESULT',space,idx,repr(result),flush=True)
+                          break
+                      except Exception as exc:
+                          variant_errors.append({'variant':idx,'error':repr(exc),'traceback':traceback.format_exc()})
+                          print('variant failed',idx,repr(exc),flush=True)
+                  if result is None:
+                      raise RuntimeError(f'All input variants failed: {variant_errors!r}')
+
+                  Path(f'output/result_{space.replace("/","_")}.json').write_text(
+                      json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8'
+                  )
+                  copied=[]
+                  if isinstance(result,(list,tuple)):
+                      for i,item in enumerate(result):
+                          p=local_media_path(item)
+                          if p:
+                              dst=Path('output')/f'liveportrait_{space.replace("/","_")}_{i}.mp4'
+                              shutil.copy2(p,dst);copied.append(str(dst));print('copied',p,'->',dst)
+                  else:
+                      p=local_media_path(result)
+                      if p:
+                          dst=Path('output')/f'liveportrait_{space.replace("/","_")}_0.mp4'
+                          shutil.copy2(p,dst);copied.append(str(dst))
+                  if not copied:
+                      raise RuntimeError(f'No local video path in result {result!r}')
+                  # Prefer the paste-back output (usually the first output) as the review source.
+                  shutil.copy2(copied[0],'output/heroine_liveportrait_source.mp4')
+                  Path('output/selected_space.txt').write_text(space,encoding='utf-8')
+                  Path('output/candidates.json').write_text(json.dumps(copied,indent=2),encoding='utf-8')
+                  print('SUCCESS SPACE',space,flush=True)
+                  break
+              except Exception as exc:
+                  rec={'space':space,'error':repr(exc),'traceback':traceback.format_exc()}
+                  errors.append(rec)
+                  print('SPACE FAILED',space,repr(exc),flush=True)
+                  Path('output/errors.json').write_text(json.dumps(errors,ensure_ascii=False,indent=2),encoding='utf-8')
+          else:
+              raise RuntimeError(f'Every LivePortrait Space failed: {errors!r}')
+          PY
+
+      - name: Validate temporal motion and export a high-bitrate 1080p review
+        run: |
+          set -euo pipefail
+          SRC=output/heroine_liveportrait_source.mp4
+          test -s "$SRC"
+          ffprobe -v error \
+            -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt,duration \
+            -show_entries format=duration,size,bit_rate -of json "$SRC" | tee output/source_ffprobe.json
+          ffmpeg -y -i "$SRC" \
+            -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.10:5:5:0,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 14 -movflags +faststart -an \
+            output/BDA_heroine_liveportrait_review_1080p.mp4
+          python - <<'PY'
+          import cv2, numpy as np, json
+          p='output/heroine_liveportrait_source.mp4'
+          cap=cv2.VideoCapture(p);gray=[];colour=[]
+          while True:
+              ok,frame=cap.read()
+              if not ok:break
+              gray.append(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY))
+              colour.append(float(np.mean(np.max(frame,axis=2)-np.min(frame,axis=2))))
+          if len(gray)<20:raise SystemExit(f'too few frames: {len(gray)}')
+          diffs=np.array([np.mean(cv2.absdiff(gray[i],gray[i-1])) for i in range(1,len(gray))])
+          qc={
+              'frames':len(gray),
+              'mean_adjacent_difference':float(diffs.mean()),
+              'p90_adjacent_difference':float(np.percentile(diffs,90)),
+              'motion_ratio':float((diffs>.20).mean()),
+              'colour_proxy':float(np.mean(colour)),
+          }
+          open('output/qc.json','w').write(json.dumps(qc,indent=2));print(qc)
+          if qc['motion_ratio']<.40:raise SystemExit('motion quality gate failed')
+          if qc['colour_proxy']<3:raise SystemExit('monochrome quality gate failed')
+          PY
+          ffmpeg -y -i "$SRC" -vf "fps=3,scale=320:-1,tile=8x1" -frames:v 1 output/temporal_contact.jpg || true
+          test -s output/BDA_heroine_liveportrait_review_1080p.mp4
+
+      - name: Upload true-motion clip and QC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liveportrait-bda-heroine-v02
+          path: output/
+          compression-level: 0
+          retention-days: 7
