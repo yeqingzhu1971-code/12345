@@ -1,0 +1,42 @@
+name: Generate Opening Continuous Video Test
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install generation client
+        run: python -m pip install --upgrade gradio_client
+
+      - name: Generate true temporal test shot
+        run: python scripts/generate_opening_test_ltx.py
+
+      - name: Validate generated video
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          test -s video_output/shot_01_heathrow_private_lounge_test.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,duration -show_entries format=duration,size -of json video_output/shot_01_heathrow_private_lounge_test.mp4 | tee video_output/ffprobe.json
+
+      - name: Upload generated shot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-continuous-video-test-v02
+          path: video_output/
+          retention-days: 14
+          if-no-files-found: warn
