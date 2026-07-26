@@ -3,6 +3,8 @@ name: Wan Cloud Video Test
 on:
   push:
     branches: [wan-cloud-video-test-v01]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
