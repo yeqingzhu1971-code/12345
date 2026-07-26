@@ -1,12 +1,14 @@
 name: Execute FasterLivePortrait CPU Sample
 
 on:
-  pull_request:
+  push:
     branches: [main]
+    paths:
+      - 'runs/fasterliveportrait_cpu_trigger.txt'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   generate:
@@ -14,10 +16,13 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       - name: Install system and Python dependencies
+        id: deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg libgl1 libglib2.0-0 git
@@ -25,6 +30,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchvision==0.18.1
           pip install "numpy<2" onnx==1.16.2 onnxruntime==1.18.1 opencv-python-headless==4.10.0.84 omegaconf scikit-image insightface==0.7.3 "huggingface_hub[cli]" mediapipe==0.10.14 torchgeometry soundfile munch tqdm colorama ffmpeg-python
       - name: Clone FasterLivePortrait, patch CPU support, and download human ONNX models
+        id: models
         run: |
           git clone --depth 1 https://github.com/warmshao/FasterLivePortrait.git flp
           python - <<'PY'
@@ -52,6 +58,7 @@ jobs:
           test -s checkpoints/liveportrait_onnx/warping_spade.onnx
           test -s checkpoints/liveportrait_onnx/motion_extractor.onnx
       - name: Restore revised heroine and prepare a short natural driver
+        id: prep
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -66,6 +73,8 @@ jobs:
           ffmpeg -y -i flp/assets/examples/driving/d0.mp4 -t 2.2 -vf "fps=12,scale=512:-2:flags=lanczos" -an driver_short.mp4
           ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames:format=duration,size -of json driver_short.mp4 | tee driver_ffprobe.json
       - name: Run real frame-by-frame portrait inference on CPU
+        id: infer
+        continue-on-error: true
         run: |
           set -o pipefail
           mkdir -p output
@@ -89,6 +98,9 @@ jobs:
           test -s "$RESULT"
           cp "$RESULT" ../output/female_bda_liveportrait_cpu_source.mp4
       - name: Validate true motion and export 1080p review
+        id: validate
+        if: steps.infer.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_bda_liveportrait_cpu_source.mp4 | tee output/source_ffprobe.json
@@ -107,14 +119,33 @@ jobs:
           PY
           ffmpeg -y -i output/female_bda_liveportrait_cpu_source.mp4 -vf "fps=3,scale=360:-1,tile=6x1" -frames:v 1 output/contact.jpg || true
           test -s output/female_bda_liveportrait_cpu_review_1080p.mp4
-      - name: Upload genuine motion sample
+      - name: Publish video or diagnostic status to the repository
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fasterliveportrait-cpu-female-exec-v01
-          path: |
-            output/
-            model_files.txt
-            driver_ffprobe.json
-          retention-days: 7
-          compression-level: 0
+        env:
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          MODELS_OUTCOME: ${{ steps.models.outcome }}
+          PREP_OUTCOME: ${{ steps.prep.outcome }}
+          INFER_OUTCOME: ${{ steps.infer.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+        run: |
+          set -e
+          DEST=generated/fasterliveportrait_cpu
+          mkdir -p "$DEST"
+          cp -f output/*.mp4 "$DEST"/ 2>/dev/null || true
+          cp -f output/*.json "$DEST"/ 2>/dev/null || true
+          cp -f output/*.jpg "$DEST"/ 2>/dev/null || true
+          cp -f output/*.log "$DEST"/ 2>/dev/null || true
+          cp -f model_files.txt driver_ffprobe.json "$DEST"/ 2>/dev/null || true
+          python - <<'PY'
+          import json,os,time,pathlib
+          d={k:os.environ.get(k) for k in ['DEPS_OUTCOME','MODELS_OUTCOME','PREP_OUTCOME','INFER_OUTCOME','VALIDATE_OUTCOME']}
+          d['published_at_epoch']=int(time.time())
+          pathlib.Path('generated/fasterliveportrait_cpu/status.json').write_text(json.dumps(d,indent=2),encoding='utf-8')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          git commit -m "Publish CPU LivePortrait heroine sample and QC" || true
+          git push origin HEAD:main
+          test "$INFER_OUTCOME" = success
+          test "$VALIDATE_OUTCOME" = success
