@@ -1,0 +1,234 @@
+name: VideoPlus Quality Gate Final
+
+on:
+  push:
+    branches: [videoplus-quality-final-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install browser and media tools
+        run: |
+          pip install playwright opencv-python-headless numpy
+          playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Restore and enhance the approved heroine reference
+        run: |
+          python - <<'PY'
+          import base64, json, urllib.request
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r:
+              d=json.load(r)
+          raw=base64.b64decode(d['content'])
+          open('female_ref_512.jpg','wb').write(raw)
+          print('reference bytes:',len(raw))
+          PY
+          ffmpeg -y -i female_ref_512.jpg -vf "scale=1280:720:flags=lanczos,unsharp=5:5:0.18:5:5:0.0" -frames:v 1 -q:v 2 female_ref_1280.jpg
+          test -s female_ref_1280.jpg
+
+      - name: Submit and poll the true-motion heroine shot
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import asyncio, base64, json, os, time
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          PROMPT=(
+            'Cinematic live-action, one continuous natural shot in a professional Beijing dance academy rehearsal studio during a warm early-autumn afternoon. '
+            'Preserve the exact identity, facial proportions, large expressive eyes, hair bun, natural skin tone and black dance practice clothing of the young Chinese female dancer in the reference image. '
+            'She has just completed a demanding rehearsal. Her shoulders and chest show only subtle natural breathing and she blinks once. '
+            'A classmate calls her from just behind the camera. She pauses for a fraction of a second, turns her head naturally toward the camera, and gives a bright spontaneous smile with small dimples. '
+            'A few background dancers continue gentle rehearsal movements in soft focus. Warm side-back sunlight passes through tall windows and catches several sweat-damp loose hair strands. '
+            'The camera makes an extremely slow stable dolly-in. Natural skin texture, coherent eyes and mouth, realistic hair and cloth movement, physically plausible motion, shallow cinematic depth of field, full colour, no speaking, no subtitles, no text, no logo, no watermark. '
+            'Avoid identity drift, face morphing, deformed eyes, warped mouth, extra fingers, plastic skin, excessive orange light, black-and-white imagery, flicker, jitter, frozen frames, slideshow motion, and zoom-only animation.'
+          )
+
+          def recursive_find_task_id(x):
+              if isinstance(x,dict):
+                  for k,v in x.items():
+                      if k.lower() in {'task_id','taskid','id'} and isinstance(v,str) and len(v)>=16:
+                          return v
+                  for v in x.values():
+                      r=recursive_find_task_id(v)
+                      if r:return r
+              elif isinstance(x,list):
+                  for v in x:
+                      r=recursive_find_task_id(v)
+                      if r:return r
+              return None
+
+          def find_matching_task(x,task_id):
+              if isinstance(x,dict):
+                  if task_id in [str(v) for v in x.values() if isinstance(v,(str,int))]:
+                      return x
+                  for v in x.values():
+                      r=find_matching_task(v,task_id)
+                      if r:return r
+              elif isinstance(x,list):
+                  for v in x:
+                      r=find_matching_task(v,task_id)
+                      if r:return r
+              return None
+
+          def collect_media_urls(x):
+              out=[]
+              if isinstance(x,dict):
+                  for k,v in x.items():
+                      if isinstance(v,str) and v.startswith(('https://','http://')):
+                          lk=k.lower();lv=v.lower()
+                          if any(t in lk for t in ['video','result','output','media','file','url']) and ('.mp4' in lv or '.webm' in lv or '.mov' in lv or 'result.videoplus.ai' in lv):
+                              out.append(v)
+                      out.extend(collect_media_urls(v))
+              elif isinstance(x,list):
+                  for v in x:out.extend(collect_media_urls(v))
+              return list(dict.fromkeys(out))
+
+          async def main():
+              async with async_playwright() as p:
+                  browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+                  context=await browser.new_context(viewport={'width':1440,'height':1000},locale='en-US',accept_downloads=True)
+                  page=await context.new_page()
+                  network=[]
+                  page.on('console',lambda m: print('CONSOLE',m.type,m.text))
+                  page.on('pageerror',lambda e: print('PAGEERROR',e))
+                  async def record(resp):
+                      u=resp.url.lower();ct=(resp.headers.get('content-type') or '').lower()
+                      if '/api/aigc/' in u or 'video/' in ct:
+                          network.append({'status':resp.status,'url':resp.url,'content_type':ct})
+                  page.on('response',record)
+
+                  await page.goto('https://videoplus.ai/',wait_until='networkidle',timeout=120000)
+                  await page.wait_for_timeout(5000)
+                  close=page.get_by_label('关闭横幅')
+                  if await close.count():
+                      try:await close.click(force=True)
+                      except Exception:pass
+
+                  chooser_future=asyncio.create_task(page.wait_for_event('filechooser',timeout=30000))
+                  await page.locator('.el-upload').last.evaluate('(el)=>el.click()')
+                  chooser=await chooser_future
+                  await chooser.set_files('female_ref_1280.jpg')
+                  await page.wait_for_timeout(10000)
+                  await page.locator('textarea[placeholder="Enter your idea to generate"]').fill(PROMPT)
+                  create=page.get_by_role('button',name='Create for FREE',exact=True)
+                  for i in range(180):
+                      if not await create.is_disabled():break
+                      if i%20==0:print('waiting for upload acceptance',i)
+                      await page.wait_for_timeout(1000)
+                  await page.screenshot(path='output/ready.png',full_page=True)
+                  if await create.is_disabled():
+                      raise RuntimeError('VideoPlus did not accept the reference image')
+
+                  async with page.expect_response(lambda r:'free-video-generation/create-task' in r.url,timeout=60000) as response_info:
+                      await create.click()
+                  response=await response_info.value
+                  create_json=await response.json()
+                  Path('output/create_task.json').write_text(json.dumps(create_json,ensure_ascii=False,indent=2),encoding='utf-8')
+                  task_id=recursive_find_task_id(create_json)
+                  if not task_id:
+                      raise RuntimeError(f'Could not read task id from create response: {create_json!r}')
+                  print('TASK_ID',task_id)
+                  Path('output/task_id.txt').write_text(task_id,encoding='utf-8')
+                  await page.screenshot(path='output/submitted.png',full_page=True)
+
+                  history_url='https://videoplus.ai/api/aigc/video/video-generation/get-history?page=1&size=20&task_type=text-to-video,image-to-video'
+                  execution_url=f'https://videoplus.ai/api/aigc/video/free-video-generation/get_execution_time?task_id={task_id}'
+                  deadline=time.time()+70*60
+                  last_summary=None
+                  media_url=None
+                  snapshots=[]
+                  while time.time()<deadline:
+                      await page.wait_for_timeout(12000)
+                      stamp=int(time.time()*1000)
+                      er=await context.request.get(execution_url,timeout=30000)
+                      hr=await context.request.get(history_url+f'&_nocache={stamp}',timeout=30000)
+                      try:execution=await er.json()
+                      except Exception:execution={'status':er.status,'text':(await er.text())[:10000]}
+                      try:history=await hr.json()
+                      except Exception:history={'status':hr.status,'text':(await hr.text())[:10000]}
+                      task=find_matching_task(history,task_id)
+                      urls=collect_media_urls(task or {})
+                      summary={'time':stamp,'execution':execution,'task':task,'candidate_urls':urls}
+                      snapshots.append(summary)
+                      Path('output/poll_snapshots.json').write_text(json.dumps(snapshots,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+                      Path('output/network.json').write_text(json.dumps(network[-1000:],ensure_ascii=False,indent=2),encoding='utf-8')
+                      compact=json.dumps({'execution':execution,'task':task,'urls':urls},ensure_ascii=False,default=str)[:5000]
+                      if compact!=last_summary:
+                          print('POLL',compact)
+                          last_summary=compact
+                      for u in urls:
+                          if any(ext in u.lower() for ext in ['.mp4','.webm','.mov']) or 'result.videoplus.ai' in u:
+                              media_url=u;break
+                      if media_url:break
+
+                  if not media_url:
+                      await page.screenshot(path='output/timeout.png',full_page=True)
+                      raise TimeoutError(f'VideoPlus task {task_id} did not return a generated media URL in 70 minutes')
+
+                  print('GENERATED_MEDIA_URL',media_url)
+                  mr=await context.request.get(media_url,timeout=180000)
+                  if not mr.ok:
+                      raise RuntimeError(f'Generated media download failed: HTTP {mr.status}')
+                  data=await mr.body()
+                  if len(data)<10000:
+                      raise RuntimeError(f'Generated media response was unexpectedly small: {len(data)} bytes')
+                  Path('output/heroine_motion_source.mp4').write_bytes(data)
+                  Path('output/media_url.txt').write_text(media_url,encoding='utf-8')
+                  await page.screenshot(path='output/result_page.png',full_page=True)
+                  await browser.close()
+
+          asyncio.run(main())
+          PY
+
+      - name: Validate temporal motion and create the 1080p review master
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/heroine_motion_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/heroine_motion_source.mp4 \
+            -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.18:5:5:0.0,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 14 -movflags +faststart -an \
+            output/heroine_turn_smile_quality_test_1080p.mp4
+          python - <<'PY'
+          import cv2, json, numpy as np
+          p='output/heroine_motion_source.mp4'
+          c=cv2.VideoCapture(p);frames=[];colour=[]
+          while True:
+              ok,f=c.read()
+              if not ok:break
+              frames.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY))
+              colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(frames)<24:raise SystemExit(f'Too few decoded frames: {len(frames)}')
+          diffs=np.array([np.mean(cv2.absdiff(frames[i],frames[i-1])) for i in range(1,len(frames))])
+          qc={'decoded_frames':len(frames),'mean_adjacent_frame_difference':float(diffs.mean()),'p90_adjacent_frame_difference':float(np.percentile(diffs,90)),'nontrivial_motion_ratio':float((diffs>0.75).mean()),'mean_colourfulness_proxy':float(np.mean(colour))}
+          open('output/motion_qc.json','w').write(json.dumps(qc,indent=2));print(qc)
+          if qc['nontrivial_motion_ratio']<0.60:raise SystemExit('Rejected: mostly static or slideshow-like motion')
+          if qc['mean_colourfulness_proxy']<3.0:raise SystemExit('Rejected: image is effectively monochrome')
+          PY
+          ffmpeg -y -i output/heroine_motion_source.mp4 -vf "select='eq(n,0)+eq(n,24)+eq(n,48)+eq(n,72)+eq(n,96)',scale=384:-1,tile=5x1" -frames:v 1 output/temporal_contact.jpg || true
+          test -s output/heroine_turn_smile_quality_test_1080p.mp4
+
+      - name: Upload the genuine review clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heroine-turn-smile-quality-gate-v02
+          path: output/
+          retention-days: 7
+          compression-level: 0
