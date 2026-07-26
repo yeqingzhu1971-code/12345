@@ -1,0 +1,57 @@
+name: VideoPlus Browser Test
+
+on:
+  push:
+    branches: [videoplus-browser-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install browser tools
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+      - name: Inspect VideoPlus generator UI
+        run: |
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/browser.log
+          import asyncio, json
+          from playwright.async_api import async_playwright
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True)
+              context=await browser.new_context(viewport={'width':1440,'height':1100}, locale='en-US')
+              page=await context.new_page()
+              page.on('console',lambda m: print('CONSOLE',m.type,m.text))
+              page.on('pageerror',lambda e: print('PAGEERROR',e))
+              resp=await page.goto('https://videoplus.ai/',wait_until='networkidle',timeout=120000)
+              print('status',resp.status if resp else None,'url',page.url,'title',await page.title())
+              await page.screenshot(path='output/page.png',full_page=True)
+              html=await page.content(); open('output/page.html','w',encoding='utf-8').write(html)
+              print('body text:',(await page.locator('body').inner_text())[:12000])
+              info=await page.evaluate('''() => Array.from(document.querySelectorAll('input,textarea,select,button')).map((e,i)=>({i,tag:e.tagName,type:e.type||'',name:e.name||'',id:e.id||'',placeholder:e.placeholder||'',aria:e.getAttribute('aria-label')||'',text:(e.innerText||e.value||'').trim().slice(0,160),accept:e.accept||'',disabled:e.disabled,outer:e.outerHTML.slice(0,500)}))''')
+              open('output/controls.json','w',encoding='utf-8').write(json.dumps(info,ensure_ascii=False,indent=2))
+              print(json.dumps(info,ensure_ascii=False,indent=2))
+              await browser.close()
+          asyncio.run(main())
+          PY
+      - name: Upload inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videoplus-browser-inspection
+          path: output/
+          retention-days: 7
