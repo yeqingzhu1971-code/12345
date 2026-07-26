@@ -45,7 +45,7 @@ jobs:
           from gradio_client import Client, handle_file
           token=os.environ.get('HF_TOKEN') or None
           print('authenticated:', bool(token))
-          client=Client('zerogpu-aoti/wan2-2-fp8da-aoti-faster', hf_token=token)
+          client=Client('zerogpu-aoti/wan2-2-fp8da-aoti-faster', token=token) if token else Client('zerogpu-aoti/wan2-2-fp8da-aoti-faster')
           api=client.view_api(return_format='dict')
           Path('output/api.json').write_text(json.dumps(api,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
           prompt=(
@@ -93,7 +93,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wan22-female-motion-review-v01
+          name: wan22-female-motion-review-v02
           path: output/
           retention-days: 7
           compression-level: 0
