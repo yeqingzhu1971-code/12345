@@ -39,6 +39,7 @@ jobs:
           test -s female_ref.jpg
       - name: Generate true-motion 16:9 heroine shot on LTX Video Fast
         run: |
+          set -o pipefail
           mkdir -p output
           python - <<'PY' 2>&1 | tee output/ltx_generation.log
           import json, os, shutil
@@ -47,15 +48,15 @@ jobs:
 
           prompt = (
             'A single continuous cinematic live-action shot in a professional Beijing dance academy rehearsal studio during a warm early-autumn afternoon. '
-            'Preserve the exact identity, facial proportions, eyes, hairstyle and black dance practice clothing of the young East Asian female dancer in the reference image. '
-            'She has just finished a demanding rehearsal. She breathes naturally, blinks once, hears a classmate call from behind camera, then gently turns her head toward the camera and gives a bright spontaneous smile with small dimples. '
-            'A few background dancers continue slow rehearsal movements in soft focus. Warm side-back sunlight passes through tall windows, catching loose sweat-damp hair strands and creating subtle golden rim light. '
-            'The camera performs a very slow stable dolly-in. Natural skin texture, coherent face and hands, realistic cloth motion, subtle chest and shoulder breathing, physically plausible movement, cinematic shallow depth of field, full colour, no text, no subtitles, no watermark.'
+            'Preserve the exact identity, facial proportions, large expressive eyes, hairstyle and black dance practice clothing of the young East Asian female dancer in the reference image. '
+            'She has just finished rehearsal. She breathes naturally, blinks once, hears a classmate call from behind camera, then gently turns her head toward camera and gives a bright spontaneous smile with small dimples. '
+            'Background dancers continue slow rehearsal movements in soft focus. Warm side-back sunlight passes through tall windows and catches a few sweat-damp loose hair strands. '
+            'Very slow stable dolly-in, natural skin texture, coherent face, realistic cloth movement, subtle shoulder breathing, physically plausible motion, cinematic shallow depth of field, full colour, no text.'
           )
           negative = (
-            'identity change, face morphing, deformed eyes, asymmetrical eyes, warped mouth, extra teeth, extra fingers, fused fingers, duplicated person, '
-            'rubber skin, plastic skin, beauty filter, overexposure, excessive orange colour, black and white, flicker, jitter, frozen image, slideshow, zoom-only motion, '
-            'fast camera movement, lip sync, speaking, text, captions, logo, watermark, low detail, blurry face'
+            'identity change, face morphing, deformed eyes, asymmetrical eyes, warped mouth, extra teeth, extra fingers, duplicated person, '
+            'rubber skin, plastic skin, beauty filter, overexposure, excessive orange, black and white, flicker, jitter, frozen image, slideshow, zoom-only motion, '
+            'fast camera, speaking, text, captions, logo, watermark, blurry face'
           )
           client = Client('Lightricks/ltx-video-distilled')
           result = client.predict(
@@ -63,15 +64,15 @@ jobs:
               negative,
               handle_file('female_ref.jpg'),
               None,
-              720,
-              1280,
+              512,
+              896,
               'image-to-video',
-              5.0,
+              3.0,
               9,
               20260726,
               False,
               1.0,
-              True,
+              False,
               api_name='/image_to_video'
           )
           print('result:', result)
@@ -94,14 +95,15 @@ jobs:
               return None
           p=find_path(result)
           if not p: raise RuntimeError(f'No local video path in result: {result!r}')
-          shutil.copy2(p,'output/female_turn_smile_ltx_720p.mp4')
+          shutil.copy2(p,'output/female_turn_smile_ltx_source.mp4')
           print('saved',p)
           PY
       - name: Create high-bitrate 1080p review master
         run: |
-          ffmpeg -y -i output/female_turn_smile_ltx_720p.mp4 \
-            -vf "scale=1920:1080:flags=lanczos,unsharp=5:5:0.35:5:5:0.0,format=yuv420p" \
-            -c:v libx264 -preset slow -crf 15 -movflags +faststart -an \
+          set -euo pipefail
+          ffmpeg -y -i output/female_turn_smile_ltx_source.mp4 \
+            -vf "scale=1920:1080:flags=lanczos,unsharp=5:5:0.30:5:5:0.0,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 14 -movflags +faststart -an \
             output/female_turn_smile_review_1080p.mp4
           ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_review_1080p.mp4 | tee output/ffprobe.json
           test -s output/female_turn_smile_review_1080p.mp4
@@ -109,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ltx-female-turn-smile-review-v01
+          name: ltx-female-turn-smile-review-v02
           path: output/
           retention-days: 7
           compression-level: 0
