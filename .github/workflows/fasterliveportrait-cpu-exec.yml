@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'runs/fasterliveportrait_cpu_trigger.txt'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   generate:
@@ -16,8 +18,6 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -119,7 +119,7 @@ jobs:
           PY
           ffmpeg -y -i output/female_bda_liveportrait_cpu_source.mp4 -vf "fps=3,scale=360:-1,tile=6x1" -frames:v 1 output/contact.jpg || true
           test -s output/female_bda_liveportrait_cpu_review_1080p.mp4
-      - name: Publish video or diagnostic status to the repository
+      - name: Collect video or diagnostic status
         if: always()
         env:
           DEPS_OUTCOME: ${{ steps.deps.outcome }}
@@ -128,24 +128,22 @@ jobs:
           INFER_OUTCOME: ${{ steps.infer.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
         run: |
-          set -e
-          DEST=generated/fasterliveportrait_cpu
-          mkdir -p "$DEST"
-          cp -f output/*.mp4 "$DEST"/ 2>/dev/null || true
-          cp -f output/*.json "$DEST"/ 2>/dev/null || true
-          cp -f output/*.jpg "$DEST"/ 2>/dev/null || true
-          cp -f output/*.log "$DEST"/ 2>/dev/null || true
-          cp -f model_files.txt driver_ffprobe.json "$DEST"/ 2>/dev/null || true
+          mkdir -p package
+          cp -f output/* package/ 2>/dev/null || true
+          cp -f model_files.txt driver_ffprobe.json package/ 2>/dev/null || true
           python - <<'PY'
           import json,os,time,pathlib
           d={k:os.environ.get(k) for k in ['DEPS_OUTCOME','MODELS_OUTCOME','PREP_OUTCOME','INFER_OUTCOME','VALIDATE_OUTCOME']}
-          d['published_at_epoch']=int(time.time())
-          pathlib.Path('generated/fasterliveportrait_cpu/status.json').write_text(json.dumps(d,indent=2),encoding='utf-8')
+          d['finished_at_epoch']=int(time.time())
+          pathlib.Path('package/status.json').write_text(json.dumps(d,indent=2),encoding='utf-8')
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add "$DEST"
-          git commit -m "Publish CPU LivePortrait heroine sample and QC" || true
-          git push origin HEAD:main
           test "$INFER_OUTCOME" = success
           test "$VALIDATE_OUTCOME" = success
+      - name: Upload genuine motion sample and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fasterliveportrait-cpu-female-exec-v02
+          path: package/
+          retention-days: 7
+          compression-level: 0
