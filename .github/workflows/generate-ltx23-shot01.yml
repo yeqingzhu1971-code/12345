@@ -1,4 +1,4 @@
-name: Generate LTX 2.3 Opening Shot 01
+name: Generate LTX Cloud Opening Shot 01
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Generate true high-resolution temporal video
+      - name: Generate true temporal cloud video
         run: |
           set -o pipefail
           mkdir -p ltx23_output
@@ -34,22 +34,22 @@ jobs:
       - name: Validate video and create temporal QC sheet
         run: |
           set -euo pipefail
-          VIDEO=ltx23_output/shot01_heathrow_private_suite_ltx23.mp4
+          VIDEO=ltx23_output/shot01_heathrow_private_suite_ltx2.mp4
           test -s "$VIDEO"
           ffprobe -v error \
             -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration:format=duration,size,bit_rate \
             -of json "$VIDEO" | tee ltx23_output/ffprobe.json
           ffmpeg -hide_banner -loglevel error -i "$VIDEO" \
-            -vf "fps=1,scale=512:-1,tile=5x1" -frames:v 1 \
+            -vf "fps=1,scale=512:-1,tile=3x1" -frames:v 1 \
             ltx23_output/temporal_contact.jpg
-          ffmpeg -hide_banner -loglevel error -ss 2.5 -i "$VIDEO" -frames:v 1 \
+          ffmpeg -hide_banner -loglevel error -ss 1.5 -i "$VIDEO" -frames:v 1 \
             ltx23_output/midframe.jpg
 
       - name: Upload shot and QC evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opening-ltx23-shot01-v01
+          name: opening-ltx-cloud-shot01-v01
           path: ltx23_output/
           compression-level: 0
           retention-days: 14
