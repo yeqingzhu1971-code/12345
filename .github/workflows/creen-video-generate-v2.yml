@@ -21,26 +21,22 @@ jobs:
           python-version: '3.11'
       - name: Install tools
         run: |
-          pip install playwright opencv-python-headless numpy Pillow requests
+          pip install playwright opencv-python-headless numpy Pillow
           playwright install --with-deps chromium
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-      - name: Restore exact revised heroine reference with authenticated GitHub API
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Prepare the checked-in revised heroine reference
         run: |
+          set -euo pipefail
+          test -s assets/female_ref.jpg
           python - <<'PY'
-          import os,base64,requests
           from PIL import Image,ImageFile
           ImageFile.LOAD_TRUNCATED_IMAGES=True
-          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
-          r=requests.get(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',headers={'Authorization':f'Bearer {os.environ["GH_TOKEN"]}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},timeout=60)
-          print('GitHub status',r.status_code,'bytes',len(r.content));r.raise_for_status();d=r.json()
-          raw=base64.b64decode(d['content']);open('female_ref_raw.jpg','wb').write(raw)
-          im=Image.open('female_ref_raw.jpg').convert('RGB').resize((1024,576),Image.Resampling.LANCZOS)
+          im=Image.open('assets/female_ref.jpg').convert('RGB')
+          print('checked-in reference',im.size,im.mode)
+          im=im.resize((1024,576),Image.Resampling.LANCZOS)
           im.save('female_ref.png',format='PNG',optimize=False)
-          print('reference bytes',len(raw),'size',im.size,'mode',im.mode)
           PY
-          file female_ref.png
+          file assets/female_ref.jpg female_ref.png
           test -s female_ref.png
       - name: Generate and recover genuine Creen temporal video
         run: |
@@ -98,7 +94,7 @@ jobs:
               page.on('response',lambda r:asyncio.create_task(capture(r)))
               await page.goto('https://www.creen.ai/image-to-video',wait_until='networkidle',timeout=120000);await page.wait_for_timeout(7000)
               initial=set(await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)"))
-              await page.locator('input[type=file][accept*="image/jpeg"]').set_input_files('female_ref.png')
+              await page.locator('input[type=file]').first.set_input_files('female_ref.png')
               await page.locator('textarea[placeholder="Describe what you want to create"]').fill(PROMPT);await page.wait_for_timeout(4000)
               res=page.get_by_role('button',name=re.compile(r'\d+p\s*\|\s*16:9')).first
               if await res.count():
@@ -162,7 +158,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: creen-bda-heroine-motion-v02
+          name: creen-bda-heroine-motion-v03
           path: output/
           compression-level: 0
           retention-days: 7
