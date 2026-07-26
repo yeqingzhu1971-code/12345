@@ -1,0 +1,145 @@
+name: VideoPlus Browser Generate V2
+
+on:
+  push:
+    branches: [videoplus-browser-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install playwright opencv-python-headless numpy
+          playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Restore heroine reference
+        run: |
+          python - <<'PY'
+          import base64,json,urllib.request
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r:d=json.load(r)
+          open('female_ref.jpg','wb').write(base64.b64decode(d['content']))
+          PY
+      - name: Generate genuine temporal video
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/browser_generation.log
+          import asyncio,base64,json,os,time
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          prompt=('Cinematic live-action, one continuous natural shot in a professional Beijing dance academy rehearsal studio during a warm early-autumn afternoon. '
+                  'Keep the exact same young Chinese female dancer, facial identity, large expressive eyes, hair bun, natural skin tone and black dance practice top. '
+                  'She has just finished rehearsal, breathes subtly and blinks once. Hearing a classmate call from behind camera, she pauses briefly, turns her head naturally toward camera and gives a bright spontaneous smile with small dimples. '
+                  'Warm side-back sunlight through tall windows catches sweat-damp loose hair strands. Background dancers continue slow rehearsal movements in soft focus. '
+                  'Very slow stable dolly-in, coherent face, realistic anatomy, natural hair and cloth movement, full colour, no speech, no text, no watermark, no black-and-white, no slideshow, no face morphing.')
+
+          async def save_video(page,ctx):
+            srcs=await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(x=>x.currentSrc||x.src||x.getAttribute('src')||'').filter(Boolean)")
+            print('sources',srcs)
+            for src in srcs:
+              try:
+                if src.startswith('blob:'):
+                  b64=await page.evaluate("""async u=>{let b=await (await fetch(u)).arrayBuffer(),a=new Uint8Array(b),s='',n=32768;for(let i=0;i<a.length;i+=n)s+=String.fromCharCode(...a.subarray(i,i+n));return btoa(s)}""",src)
+                  data=base64.b64decode(b64)
+                else:
+                  r=await ctx.request.get(src,timeout=120000); data=await r.body() if r.ok else b''
+                if len(data)>10000:
+                  Path('output/videoplus_source.mp4').write_bytes(data); print('saved',len(data)); return True
+              except Exception as e: print('save error',repr(e))
+            return False
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+              ctx=await browser.new_context(viewport={'width':1440,'height':1000},locale='en-US',accept_downloads=True)
+              page=await ctx.new_page(); net=[]
+              async def resp(r):
+                u=r.url.lower(); ct=(r.headers.get('content-type') or '').lower()
+                if any(k in u for k in ['upload','generate','task','project','media','video']) or 'video/' in ct: net.append({'status':r.status,'url':r.url,'ct':ct})
+              page.on('response',resp)
+              page.on('console',lambda m: print('CONSOLE',m.type,m.text))
+              await page.goto('https://videoplus.ai/',wait_until='networkidle',timeout=120000)
+              close=page.get_by_label('关闭横幅')
+              if await close.count():
+                try:await close.click()
+                except:pass
+              # Trigger the same file chooser a phone user would use.
+              upload=page.get_by_text('Upload image',exact=True).first
+              async with page.expect_file_chooser(timeout=30000) as fi:
+                await upload.click()
+              chooser=await fi.value; await chooser.set_files('female_ref.jpg')
+              print('file chooser set')
+              await page.wait_for_timeout(8000)
+              print('file counts',await page.locator('input[type=file]').evaluate_all("els=>els.map(e=>({n:e.files.length,name:e.files[0]?.name||''}))"))
+              await page.locator('textarea[placeholder="Enter your idea to generate"]').fill(prompt)
+              create=page.get_by_role('button',name='Create for FREE',exact=True)
+              for i in range(120):
+                if not await create.is_disabled():break
+                if i%10==0:
+                  print('waiting enable',i,await page.locator('body').inner_text())
+                  Path('output/network.json').write_text(json.dumps(net,indent=2),encoding='utf-8')
+                await page.wait_for_timeout(1000)
+              await page.screenshot(path='output/ready.png',full_page=True)
+              print('disabled',await create.is_disabled())
+              if await create.is_disabled():raise RuntimeError('Upload was not accepted by VideoPlus; generator stayed disabled')
+              await create.click(); print('submitted')
+              await page.screenshot(path='output/submitted.png',full_page=True)
+              deadline=time.time()+40*60; last=''
+              while time.time()<deadline:
+                await page.wait_for_timeout(5000)
+                body=await page.locator('body').inner_text()
+                if body!=last:print('BODY',body[:7000].replace('\n',' | '));last=body
+                Path('output/network.json').write_text(json.dumps(net[-1000:],indent=2),encoding='utf-8')
+                if any(x in body.lower() for x in ['login to continue','sign in to continue','please log in','insufficient credits','buy credits']):
+                  await page.screenshot(path='output/blockage.png',full_page=True);raise RuntimeError('VideoPlus demanded account or credits')
+                if await save_video(page,ctx):break
+                for t in ['View Result','Completed','Ready','Recent Projects']:
+                  loc=page.get_by_text(t,exact=False)
+                  if await loc.count():
+                    try:await loc.last.click(timeout=1500)
+                    except:pass
+              else:
+                await page.screenshot(path='output/timeout.png',full_page=True);raise TimeoutError('Generation did not produce a playable video')
+              await page.screenshot(path='output/completed.png',full_page=True)
+              await browser.close()
+          asyncio.run(main())
+          PY
+      - name: Validate motion and export review copy
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/videoplus_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/videoplus_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/heroine_motion_quality_test_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          c=cv2.VideoCapture('output/videoplus_source.mp4');a=[]
+          while 1:
+            ok,f=c.read()
+            if not ok:break
+            a.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY))
+          if len(a)<12:raise SystemExit('too few frames')
+          d=np.array([np.mean(cv2.absdiff(a[i],a[i-1])) for i in range(1,len(a))])
+          q={'frames':len(a),'mean_diff':float(d.mean()),'p90_diff':float(np.percentile(d,90)),'motion_ratio':float((d>.75).mean())};print(q);open('output/motion_qc.json','w').write(json.dumps(q,indent=2))
+          if q['motion_ratio']<.55:raise SystemExit('mostly static; rejected')
+          PY
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videoplus-heroine-motion-quality-test-v02
+          path: output/
+          retention-days: 7
+          compression-level: 0
