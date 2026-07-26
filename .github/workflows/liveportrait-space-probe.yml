@@ -1,0 +1,41 @@
+name: Probe Official LivePortrait Space
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect official Space API
+        run: |
+          pip install -U gradio_client
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import json
+          from gradio_client import Client
+          for space in ['KwaiVGI/LivePortrait','KlingTeam/LivePortrait']:
+            try:
+              c=Client(space,verbose=True)
+              info=c.view_api(all_endpoints=True,print_info=False,return_format='dict')
+              print(space,json.dumps(info,ensure_ascii=False,indent=2,default=str))
+              open('output/'+space.split('/')[-1]+'_'+space.split('/')[0]+'.json','w').write(json.dumps(info,ensure_ascii=False,indent=2,default=str))
+            except Exception as e:
+              print(space,'ERROR',repr(e))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liveportrait-space-api-probe
+          path: output/
+          retention-days: 7
