@@ -1,0 +1,56 @@
+name: Generate LTX 2.3 Opening Shot 01
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cloud generation client and QC tools
+        run: |
+          python -m pip install --upgrade gradio_client Pillow
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Generate true high-resolution temporal video
+        run: |
+          set -o pipefail
+          mkdir -p ltx23_output
+          python scripts/generate_ltx23_shot01.py 2>&1 | tee ltx23_output/generation.log
+
+      - name: Validate video and create temporal QC sheet
+        run: |
+          set -euo pipefail
+          VIDEO=ltx23_output/shot01_heathrow_private_suite_ltx23.mp4
+          test -s "$VIDEO"
+          ffprobe -v error \
+            -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration:format=duration,size,bit_rate \
+            -of json "$VIDEO" | tee ltx23_output/ffprobe.json
+          ffmpeg -hide_banner -loglevel error -i "$VIDEO" \
+            -vf "fps=1,scale=512:-1,tile=5x1" -frames:v 1 \
+            ltx23_output/temporal_contact.jpg
+          ffmpeg -hide_banner -loglevel error -ss 2.5 -i "$VIDEO" -frames:v 1 \
+            ltx23_output/midframe.jpg
+
+      - name: Upload shot and QC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-ltx23-shot01-v01
+          path: ltx23_output/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: warn
