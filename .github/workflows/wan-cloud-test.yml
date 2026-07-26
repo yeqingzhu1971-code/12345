@@ -1,0 +1,43 @@
+name: Wan Cloud Video Test
+
+on:
+  push:
+    branches: [wan-cloud-video-test-v01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Gradio client
+        run: pip install -U gradio_client
+      - name: Inspect official Wan Space API
+        run: |
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/wan_api.log
+          import json, traceback
+          from gradio_client import Client
+          try:
+              client = Client('Wan-AI/Wan2.1')
+              info = client.view_api(return_format='dict')
+              print(json.dumps(info, ensure_ascii=False, indent=2, default=str))
+              open('output/wan_api.json','w',encoding='utf-8').write(json.dumps(info,ensure_ascii=False,indent=2,default=str))
+          except Exception:
+              traceback.print_exc()
+              raise
+          PY
+      - name: Upload API inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-cloud-api-inspection
+          path: output/
+          retention-days: 7
