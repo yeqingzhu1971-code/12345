@@ -1,6 +1,8 @@
 name: FasterLivePortrait CPU Female Motion Sample
 
 on:
+  push:
+    branches: [fasterliveportrait-cpu-v01]
   pull_request:
     branches: [main]
   workflow_dispatch:
