@@ -35,7 +35,7 @@ with Image.open(source_path) as source_image:
 if source.width < 700 or source.height < 400:
     raise RuntimeError(f"Reference dimensions unexpectedly small: {source.size}")
 
-# Mobile/cloud generation pattern: coherent lower-resolution temporal generation first,
+# Mobile/cloud generation pattern: coherent temporal generation first,
 # followed by learned spatial upscaling in a separate cloud pass.
 frame = source.crop((190, 55, 750, 370)).resize((768, 432), Image.Resampling.LANCZOS)
 frame = ImageEnhance.Color(frame).enhance(0.43)
@@ -94,12 +94,12 @@ def find_media(value: Any) -> tuple[str, str] | None:
     return None
 
 
-client = Client("Lightricks/LTX-2-3", verbose=True)
+client = Client("Lightricks/ltx-2-distilled", verbose=True)
 raw_result = client.predict(
     input_image=handle_file(str(reference_path)),
     prompt=PROMPT,
     duration=3.0,
-    enhance_prompt=False,
+    enhance_prompt=True,
     seed=728310,
     randomize_seed=False,
     height=432,
@@ -115,7 +115,7 @@ if not found:
     raise RuntimeError(f"No downloadable video returned: {raw_result!r}")
 kind, source_video = found
 
-destination = OUT / "shot01_heathrow_private_suite_ltx23.mp4"
+destination = OUT / "shot01_heathrow_private_suite_ltx2.mp4"
 if kind == "url":
     urllib.request.urlretrieve(source_video, destination)
 else:
@@ -125,7 +125,7 @@ else:
     shutil.copy2(local_path, destination)
 
 manifest = {
-    "generator": "Lightricks/LTX-2-3",
+    "generator": "Lightricks/ltx-2-distilled",
     "endpoint": "/generate_video",
     "pipeline_stage": "temporal_generation_before_spatial_upscale",
     "input_size_bytes": len(raw),
