@@ -24,9 +24,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchvision==0.18.1
           pip install "numpy<2" onnx==1.16.2 onnxruntime==1.18.1 opencv-python-headless==4.10.0.84 omegaconf scikit-image insightface==0.7.3 "huggingface_hub[cli]" mediapipe==0.10.14 torchgeometry soundfile munch tqdm colorama ffmpeg-python
-      - name: Clone FasterLivePortrait and download only human ONNX models
+      - name: Clone FasterLivePortrait, patch CPU support, and download human ONNX models
         run: |
           git clone --depth 1 https://github.com/warmshao/FasterLivePortrait.git flp
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('flp/src/models/base_model.py')
+          s=p.read_text()
+          s=s.replace(
+            '        self.device = torch.cuda.current_device()\n        self.cudaStream = torch.cuda.current_stream().cuda_stream\n',
+            "        if torch.cuda.is_available():\n            self.device = torch.device('cuda')\n            self.cudaStream = torch.cuda.current_stream().cuda_stream\n        else:\n            self.device = torch.device('cpu')\n            self.cudaStream = None\n"
+          )
+          p.write_text(s)
+          p=Path('flp/src/models/predictor.py')
+          s=p.read_text().replace("providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']", "providers = ['CPUExecutionProvider']")
+          s=s.replace('# opts.inter_op_num_threads = kwargs.get("num_threads", 4)', 'opts.inter_op_num_threads = kwargs.get("num_threads", 2)')
+          s=s.replace('# opts.intra_op_num_threads = kwargs.get("num_threads", 4)', 'opts.intra_op_num_threads = kwargs.get("num_threads", 4)')
+          p.write_text(s)
+          PY
           cd flp
           hf download warmshao/FasterLivePortrait --include "liveportrait_onnx/*" --local-dir checkpoints
           find checkpoints/liveportrait_onnx -maxdepth 1 -type f -printf '%f %s bytes\n' | sort | tee ../model_files.txt
@@ -92,7 +107,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fasterliveportrait-cpu-female-v01
+          name: fasterliveportrait-cpu-female-v02
           path: |
             output/
             model_files.txt
