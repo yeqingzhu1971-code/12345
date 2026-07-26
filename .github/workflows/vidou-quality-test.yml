@@ -1,0 +1,137 @@
+name: Vidou Heroine Motion Quality Test
+
+on:
+  push:
+    branches: [vidou-quality-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install playwright opencv-python-headless numpy
+          playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Prepare checked-in revised heroine reference
+        run: |
+          set -euo pipefail
+          ls -l assets
+          test -s assets/female_ref.jpg
+          cp assets/female_ref.jpg female_ref.jpg
+          file female_ref.jpg
+      - name: Generate genuine motion through Vidou web app
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import asyncio,base64,json,time
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          prompt=('Cinematic live-action, a single continuous shot in an authentic Beijing Dance Academy Chinese ethnic and folk dance rehearsal classroom during a warm early-autumn afternoon. '
+                  'Preserve the exact identity, face, large expressive eyes, hair bun, natural skin tone and black practice clothes of the young Chinese female dancer in the reference image. '
+                  'The classroom has blue-grey professional dance vinyl flooring, white square ceiling panels with rectangular fluorescent lights, tall windows with beige curtains, wooden wall panels and wooden ballet barres, restrained practical teaching-room design rather than a luxury studio. '
+                  'She has just finished rehearsal, breathes naturally and blinks once. A classmate calls from behind the camera. '
+                  'She briefly pauses, then naturally turns her head toward the camera and gives a bright spontaneous smile with small dimples. '
+                  'Warm side-back sunlight catches a few sweat-damp loose hair strands; background dancers continue gentle movements in soft focus. '
+                  'Very slow stable camera push-in, coherent facial features and anatomy, realistic hair and cloth motion, natural skin texture, full colour. '
+                  'No speech, no subtitles, no text, no watermark, no face morphing, no distorted eyes or mouth, no black-and-white, no frozen or slideshow motion.')
+
+          async def save_source(page,ctx,before):
+            srcs=await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)")
+            fresh=[s for s in srcs if s not in before]
+            print('all sources',srcs,'fresh',fresh)
+            for src in fresh:
+              try:
+                if src.startswith('blob:'):
+                  b64=await page.evaluate("""async u=>{let a=new Uint8Array(await (await fetch(u)).arrayBuffer()),s='',n=32768;for(let i=0;i<a.length;i+=n)s+=String.fromCharCode(...a.subarray(i,i+n));return btoa(s)}""",src);data=base64.b64decode(b64)
+                else:
+                  r=await ctx.request.get(src,timeout=180000);data=await r.body() if r.ok else b''
+                if len(data)>10000:Path('output/vidou_source.mp4').write_bytes(data);return True
+              except Exception as e:print('save error',repr(e))
+            return False
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage','--enable-unsafe-webgpu','--use-gl=swiftshader'])
+              ctx=await browser.new_context(viewport={'width':1440,'height':1000},locale='en-US',accept_downloads=True)
+              page=await ctx.new_page();net=[]
+              async def rr(r):
+                u=r.url.lower();ct=(r.headers.get('content-type') or '').lower()
+                if any(k in u for k in ['generate','upload','task','video','media']) or 'video/' in ct:net.append({'status':r.status,'url':r.url,'ct':ct})
+              page.on('response',rr);page.on('console',lambda m:print('CONSOLE',m.type,m.text));page.on('pageerror',lambda e:print('PAGEERROR',e))
+              await page.goto('https://vidou.ai/',wait_until='networkidle',timeout=120000);await page.wait_for_timeout(5000)
+              before=set(await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)"))
+              controls=await page.evaluate("() => [...document.querySelectorAll('input,textarea,button,select')].map((e,i)=>({i,tag:e.tagName,type:e.type||'',placeholder:e.placeholder||'',text:(e.innerText||e.value||'').trim(),accept:e.accept||'',disabled:e.disabled,outer:e.outerHTML.slice(0,400)}))")
+              print('controls',json.dumps(controls,ensure_ascii=False,indent=2));Path('output/controls.json').write_text(json.dumps(controls,ensure_ascii=False,indent=2),encoding='utf-8')
+              file_input=page.locator('input[type=file]').first
+              await file_input.set_input_files('female_ref.jpg')
+              await page.wait_for_timeout(3000)
+              ta=page.locator('textarea[placeholder*="Describe the motion"]')
+              if not await ta.count():ta=page.locator('textarea').first
+              await ta.fill(prompt)
+              gen=page.get_by_role('button',name='Generate Video',exact=False).first
+              for i in range(120):
+                if not await gen.is_disabled():break
+                if i%10==0:
+                  preview=await page.locator('img').count();print('waiting upload decode',i,'images',preview);await page.screenshot(path=f'output/wait_{i:03d}.png',full_page=True)
+                await page.wait_for_timeout(1000)
+              await page.screenshot(path='output/ready.png',full_page=True)
+              Path('output/network.json').write_text(json.dumps(net[-1000:],ensure_ascii=False,indent=2),encoding='utf-8')
+              if await gen.is_disabled():raise RuntimeError('Vidou did not decode/accept the checked-in JPEG reference')
+              await gen.click();print('submitted');await page.screenshot(path='output/submitted.png',full_page=True)
+              end=time.time()+50*60;last=''
+              while time.time()<end:
+                await page.wait_for_timeout(4000);body=await page.locator('body').inner_text();Path('output/network.json').write_text(json.dumps(net[-1000:],ensure_ascii=False,indent=2),encoding='utf-8')
+                if body!=last:print('BODY',body[:6000].replace('\n',' | '));last=body
+                if any(x in body.lower() for x in ['sign in','log in','credits required','payment required']):raise RuntimeError('Vidou unexpectedly required login/payment')
+                if await save_source(page,ctx,before):break
+                for t in ['Download','Save Video','View Result']:
+                  l=page.get_by_text(t,exact=False)
+                  if await l.count():
+                    try:
+                      async with page.expect_download(timeout=5000) as di:await l.last.click()
+                      await (await di.value).save_as('output/vidou_source.mp4');break
+                    except:pass
+                if Path('output/vidou_source.mp4').exists():break
+              else:raise TimeoutError('Vidou did not return a generated video')
+              await page.screenshot(path='output/completed.png',full_page=True);await browser.close()
+          asyncio.run(main())
+          PY
+      - name: QC and encode 1080p review
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/vidou_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/vidou_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/vidou_heroine_motion_review_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          c=cv2.VideoCapture('output/vidou_source.mp4');g=[];col=[]
+          while 1:
+            ok,f=c.read()
+            if not ok:break
+            g.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY));col.append(np.mean(np.max(f,axis=2)-np.min(f,axis=2)))
+          if len(g)<24:raise SystemExit('too few frames')
+          d=np.array([np.mean(cv2.absdiff(g[i],g[i-1])) for i in range(1,len(g))]);q={'frames':len(g),'mean_diff':float(d.mean()),'motion_ratio':float((d>.75).mean()),'colour_proxy':float(np.mean(col))};open('output/qc.json','w').write(json.dumps(q,indent=2));print(q)
+          if q['motion_ratio']<.6 or q['colour_proxy']<3:raise SystemExit('quality gate failed')
+          PY
+          ffmpeg -y -i output/vidou_source.mp4 -vf "fps=5,scale=360:-1,tile=5x1" -frames:v 1 output/contact.jpg || true
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vidou-heroine-motion-review-v03
+          path: output/
+          compression-level: 0
+          retention-days: 7
