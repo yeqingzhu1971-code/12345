@@ -38,7 +38,7 @@ jobs:
           open('female_ref_512.jpg','wb').write(raw)
           print('reference bytes:',len(raw))
           PY
-          ffmpeg -y -i female_ref_512.jpg -vf "scale=1280:720:flags=lanczos,unsharp=5:5:0.18:5:5:0.0" -q:v 2 female_ref_1280.jpg
+          ffmpeg -y -i female_ref_512.jpg -vf "scale=1280:720:flags=lanczos,unsharp=5:5:0.18:5:5:0.0" -frames:v 1 -q:v 2 female_ref_1280.jpg
           test -s female_ref_1280.jpg
 
       - name: Submit and poll the true-motion heroine shot
@@ -98,7 +98,6 @@ jobs:
                       out.extend(collect_media_urls(v))
               elif isinstance(x,list):
                   for v in x:out.extend(collect_media_urls(v))
-              # Preserve order while removing duplicates.
               return list(dict.fromkeys(out))
 
           async def main():
@@ -122,7 +121,6 @@ jobs:
                       try:await close.click(force=True)
                       except Exception:pass
 
-                  # Use the app's native upload component, exactly as a phone/browser user does.
                   chooser_future=asyncio.create_task(page.wait_for_event('filechooser',timeout=30000))
                   await page.locator('.el-upload').last.evaluate('(el)=>el.click()')
                   chooser=await chooser_future
@@ -175,7 +173,6 @@ jobs:
                       if compact!=last_summary:
                           print('POLL',compact)
                           last_summary=compact
-                      # Only URLs tied to this exact task are eligible; built-in demo videos are ignored.
                       for u in urls:
                           if any(ext in u.lower() for ext in ['.mp4','.webm','.mov']) or 'result.videoplus.ai' in u:
                               media_url=u;break
@@ -231,7 +228,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: heroine-turn-smile-quality-gate-v01
+          name: heroine-turn-smile-quality-gate-v02
           path: output/
           retention-days: 7
           compression-level: 0
