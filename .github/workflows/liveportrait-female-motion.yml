@@ -1,0 +1,94 @@
+name: Generate LivePortrait Female Motion Sample
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install -U gradio_client requests
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg git
+      - name: Restore revised heroine reference and official driving video
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os,base64,requests
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          r=requests.get(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',headers={'Authorization':f'Bearer {os.environ["GH_TOKEN"]}','Accept':'application/vnd.github+json'},timeout=60)
+          r.raise_for_status();d=r.json();open('female_ref.jpg','wb').write(base64.b64decode(d['content']))
+          PY
+          git clone --depth 1 https://github.com/KlingAIResearch/LivePortrait.git liveportrait_repo
+          test -s female_ref.jpg
+          test -s liveportrait_repo/assets/examples/driving/d0.mp4
+      - name: Generate identity-preserving facial motion on official LivePortrait cloud Space
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import json,os,shutil,urllib.request
+          from pathlib import Path
+          from gradio_client import Client,handle_file
+
+          client=Client('KwaiVGI/LivePortrait',verbose=True)
+          result=client.predict(
+            handle_file('female_ref.jpg'),
+            handle_file('liveportrait_repo/assets/examples/driving/d0.mp4'),
+            True,
+            True,
+            True,
+            api_name='/gpu_wrapped_execute_video'
+          )
+          print('RESULT',repr(result))
+          Path('output/result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+          def find_video(x):
+            if isinstance(x,str):
+              if x.startswith(('http://','https://')): return ('url',x)
+              if os.path.exists(x): return ('path',x)
+            if isinstance(x,dict):
+              for k in ('video','path','url','value','file'):
+                if k in x:
+                  z=find_video(x[k])
+                  if z:return z
+              for v in x.values():
+                z=find_video(v)
+                if z:return z
+            if isinstance(x,(list,tuple)):
+              for v in reversed(x):
+                z=find_video(v)
+                if z:return z
+          found=find_video(result)
+          if not found:raise RuntimeError(f'No video in result: {result!r}')
+          kind,src=found;dest=Path('output/female_liveportrait_source.mp4')
+          if kind=='url':urllib.request.urlretrieve(src,dest)
+          else:shutil.copy2(src,dest)
+          print('saved',dest,dest.stat().st_size)
+          PY
+      - name: Export 1080p review and temporal QC
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_liveportrait_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_liveportrait_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.10:5:5:0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_liveportrait_review_1080p.mp4
+          ffmpeg -y -i output/female_liveportrait_source.mp4 -vf "fps=3,scale=360:-1,tile=6x1" -frames:v 1 output/contact.jpg || true
+          test -s output/female_liveportrait_review_1080p.mp4
+      - name: Upload motion sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liveportrait-female-motion-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
