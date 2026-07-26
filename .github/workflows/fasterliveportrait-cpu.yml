@@ -29,13 +29,17 @@ jobs:
           git clone --depth 1 https://github.com/warmshao/FasterLivePortrait.git flp
           python - <<'PY'
           from pathlib import Path
-          p=Path('flp/src/models/base_model.py')
-          s=p.read_text()
-          s=s.replace(
-            '        self.device = torch.cuda.current_device()\n        self.cudaStream = torch.cuda.current_stream().cuda_stream\n',
-            "        if torch.cuda.is_available():\n            self.device = torch.device('cuda')\n            self.cudaStream = torch.cuda.current_stream().cuda_stream\n        else:\n            self.device = torch.device('cpu')\n            self.cudaStream = None\n"
-          )
-          p.write_text(s)
+          cpu_block="""        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+            self.cudaStream = torch.cuda.current_stream().cuda_stream
+        else:
+            self.device = torch.device('cpu')
+            self.cudaStream = None
+"""
+          for fn in ['flp/src/models/base_model.py','flp/src/models/face_analysis_model.py']:
+            p=Path(fn);s=p.read_text()
+            s=s.replace('        self.device = torch.cuda.current_device()\n        self.cudaStream = torch.cuda.current_stream().cuda_stream\n',cpu_block)
+            p.write_text(s)
           p=Path('flp/src/models/predictor.py')
           s=p.read_text().replace("providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']", "providers = ['CPUExecutionProvider']")
           s=s.replace('# opts.inter_op_num_threads = kwargs.get("num_threads", 4)', 'opts.inter_op_num_threads = kwargs.get("num_threads", 2)')
@@ -107,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fasterliveportrait-cpu-female-v02
+          name: fasterliveportrait-cpu-female-v03
           path: |
             output/
             model_files.txt
