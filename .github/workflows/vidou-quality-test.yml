@@ -21,25 +21,16 @@ jobs:
           python-version: '3.11'
       - name: Install tools
         run: |
-          pip install playwright opencv-python-headless numpy Pillow
+          pip install playwright opencv-python-headless numpy
           playwright install --with-deps chromium
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-      - name: Restore and normalize heroine reference
+      - name: Prepare checked-in revised heroine reference
         run: |
-          python - <<'PY'
-          import base64,json,urllib.request
-          from PIL import Image,ImageEnhance,ImageFilter
-          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
-          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r:d=json.load(r)
-          raw=base64.b64decode(d['content'])
-          open('female_ref_raw.jpg','wb').write(raw)
-          im=Image.open('female_ref_raw.jpg').convert('RGB')
-          im=im.resize((1024,576),Image.Resampling.LANCZOS)
-          im=ImageEnhance.Sharpness(im).enhance(1.15)
-          im.save('female_ref.png',format='PNG',optimize=True)
-          print('raw bytes',len(raw),'normalized',im.size)
-          PY
-          test -s female_ref.png
+          set -euo pipefail
+          ls -l assets
+          test -s assets/female_ref.jpg
+          cp assets/female_ref.jpg female_ref.jpg
+          file female_ref.jpg
       - name: Generate genuine motion through Vidou web app
         run: |
           set -o pipefail
@@ -86,8 +77,8 @@ jobs:
               controls=await page.evaluate("() => [...document.querySelectorAll('input,textarea,button,select')].map((e,i)=>({i,tag:e.tagName,type:e.type||'',placeholder:e.placeholder||'',text:(e.innerText||e.value||'').trim(),accept:e.accept||'',disabled:e.disabled,outer:e.outerHTML.slice(0,400)}))")
               print('controls',json.dumps(controls,ensure_ascii=False,indent=2));Path('output/controls.json').write_text(json.dumps(controls,ensure_ascii=False,indent=2),encoding='utf-8')
               file_input=page.locator('input[type=file]').first
-              await file_input.set_input_files('female_ref.png')
-              await page.wait_for_timeout(2000)
+              await file_input.set_input_files('female_ref.jpg')
+              await page.wait_for_timeout(3000)
               ta=page.locator('textarea[placeholder*="Describe the motion"]')
               if not await ta.count():ta=page.locator('textarea').first
               await ta.fill(prompt)
@@ -95,13 +86,11 @@ jobs:
               for i in range(120):
                 if not await gen.is_disabled():break
                 if i%10==0:
-                  preview=await page.locator('img').count()
-                  print('waiting upload decode',i,'images',preview)
-                  await page.screenshot(path=f'output/wait_{i:03d}.png',full_page=True)
+                  preview=await page.locator('img').count();print('waiting upload decode',i,'images',preview);await page.screenshot(path=f'output/wait_{i:03d}.png',full_page=True)
                 await page.wait_for_timeout(1000)
               await page.screenshot(path='output/ready.png',full_page=True)
               Path('output/network.json').write_text(json.dumps(net[-1000:],ensure_ascii=False,indent=2),encoding='utf-8')
-              if await gen.is_disabled():raise RuntimeError('Vidou did not decode/accept the normalized PNG reference')
+              if await gen.is_disabled():raise RuntimeError('Vidou did not decode/accept the checked-in JPEG reference')
               await gen.click();print('submitted');await page.screenshot(path='output/submitted.png',full_page=True)
               end=time.time()+50*60;last=''
               while time.time()<end:
@@ -142,7 +131,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vidou-heroine-motion-review-v02
+          name: vidou-heroine-motion-review-v03
           path: output/
           compression-level: 0
           retention-days: 7
