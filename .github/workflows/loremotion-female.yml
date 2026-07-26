@@ -1,0 +1,168 @@
+name: Generate LoreMotion BDA Heroine Clip
+
+on:
+  push:
+    branches: [loremotion-female-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install playwright opencv-python-headless numpy
+          playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Generate true-motion heroine clip
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import asyncio,base64,json,re,time
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          REF=Path('assets/female_ref.jpg')
+          if not REF.exists() or REF.stat().st_size<10000:raise RuntimeError('revised heroine reference missing')
+          PROMPT=('Single uninterrupted cinematic live-action shot in an authentic Beijing Dance Academy Chinese ethnic and folk dance rehearsal classroom during a warm early-autumn afternoon. '
+          'Preserve exactly the young Chinese female dancer from the reference image: same refined facial identity, large expressive dark eyes, delicate nose and jaw, natural skin, black hair in a clean dance bun, black professional practice clothing and tall slender trained dancer proportions. '
+          'The practical institutional classroom has blue-grey professional dance vinyl flooring, white square suspended ceiling panels with rectangular fluorescent lights, tall windows with beige curtains, warm wooden lower wall panels and wooden ballet barres, white walls, a ceiling projector and wall speaker, not a luxury studio. '
+          'She has just finished a demanding rehearsal. She breathes subtly and blinks once. A female classmate calls from behind the camera. She pauses briefly, turns her head naturally toward the camera, then gives a bright spontaneous smile with small dimples. '
+          'Several classmates continue slow rehearsal movements in soft focus. Warm side-back sunlight catches sweat-damp loose hair strands while the room remains realistic. Very slow stable dolly-in, coherent face and anatomy, physically plausible hair and cloth motion, shallow 35mm depth of field, rich full colour. '
+          'No dialogue, subtitles, text, logo or watermark. No identity drift, face morphing, crossed eyes, warped mouth, extra fingers, plastic skin, excessive orange, black-and-white, flicker, frozen frames, slideshow or zoom-only animation.')
+
+          def media_urls(x):
+            o=[]
+            if isinstance(x,dict):
+              for k,v in x.items():
+                if isinstance(v,str) and v.startswith(('http://','https://')) and any(e in v.lower() for e in ('.mp4','.webm','.mov')):o.append(v)
+                o+=media_urls(v)
+            elif isinstance(x,(list,tuple)):
+              for v in x:o+=media_urls(v)
+            return list(dict.fromkeys(o))
+
+          async def save_media(page,ctx,initial,api_media):
+            srcs=await page.evaluate("() => [...document.querySelectorAll('video,video source,a[href]')].map(e=>e.currentSrc||e.src||e.href||e.getAttribute('src')||'').filter(Boolean)")
+            for src in list(dict.fromkeys([s for s in srcs if s not in initial]+api_media)):
+              if not (src.startswith('blob:') or any(e in src.lower() for e in ('.mp4','.webm','.mov'))):continue
+              try:
+                if src.startswith('blob:'):
+                  b64=await page.evaluate("""async u=>{const a=new Uint8Array(await (await fetch(u)).arrayBuffer());let s='';for(let i=0;i<a.length;i+=32768)s+=String.fromCharCode(...a.subarray(i,i+32768));return btoa(s)}""",src);data=base64.b64decode(b64)
+                else:
+                  r=await ctx.request.get(src,timeout=180000);data=await r.body() if r.ok else b''
+                if len(data)>10000:Path('output/loremotion_source.mp4').write_bytes(data);Path('output/media_url.txt').write_text(src);return True
+              except Exception as e:print('save media error',repr(e),src)
+            return False
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+              ctx=await browser.new_context(viewport={'width':1440,'height':1100},locale='en-US',accept_downloads=True)
+              page=await ctx.new_page();net=[];api_media=[]
+              page.on('console',lambda m:print('CONSOLE',m.type,m.text));page.on('pageerror',lambda e:print('PAGEERROR',e))
+              async def capture(resp):
+                u=resp.url.lower();ct=(resp.headers.get('content-type') or '').lower()
+                if '/api/' in u or 'video/' in ct or any(k in u for k in ('generate','job','task','upload','media','render')):
+                  rec={'status':resp.status,'url':resp.url,'ct':ct}
+                  if 'json' in ct:
+                    try:j=await resp.json();rec['json']=j;api_media.extend(media_urls(j))
+                    except Exception as e:rec['error']=repr(e)
+                  net.append(rec)
+              page.on('response',lambda r:asyncio.create_task(capture(r)))
+              await page.goto('https://loremotion.com/generate/',wait_until='networkidle',timeout=120000);await page.wait_for_timeout(7000)
+              initial=set(await page.evaluate("() => [...document.querySelectorAll('video,video source,a[href]')].map(e=>e.currentSrc||e.src||e.href||e.getAttribute('src')||'').filter(Boolean)"))
+              controls=await page.evaluate("() => [...document.querySelectorAll('input,textarea,button,select,[role=button]')].map((e,i)=>({i,tag:e.tagName,type:e.type||'',name:e.name||'',id:e.id||'',placeholder:e.placeholder||'',text:(e.innerText||e.value||'').trim().slice(0,200),accept:e.accept||'',disabled:!!e.disabled,outer:e.outerHTML.slice(0,500)}))")
+              Path('output/controls.json').write_text(json.dumps(controls,ensure_ascii=False,indent=2),encoding='utf-8');print('CONTROLS',json.dumps(controls,ensure_ascii=False,indent=2))
+              # Select image-to-video mode when exposed.
+              for name in ('Image to Video','Image-to-Video','Image'):
+                loc=page.get_by_text(name,exact=False)
+                if await loc.count():
+                  try:await loc.first.click();break
+                  except:pass
+              fi=page.locator('input[type=file]').first
+              if not await fi.count():raise RuntimeError('LoreMotion file input not found')
+              await fi.set_input_files(str(REF))
+              textareas=page.locator('textarea')
+              if await textareas.count():await textareas.first.fill(PROMPT)
+              else:
+                inputs=page.locator('input[type=text]')
+                filled=False
+                for i in range(await inputs.count()):
+                  el=inputs.nth(i);ph=(await el.get_attribute('placeholder') or '').lower()
+                  if any(k in ph for k in ('prompt','describe','video')):await el.fill(PROMPT);filled=True;break
+                if not filled:raise RuntimeError('LoreMotion prompt control not found')
+              # Select 16:9 and five seconds if available.
+              for label in ('16:9','Landscape'):
+                loc=page.get_by_text(label,exact=True)
+                if await loc.count():
+                  try:await loc.last.click();break
+                  except:pass
+              for label in ('5 seconds','5s','5 sec'):
+                loc=page.get_by_text(label,exact=True)
+                if await loc.count():
+                  try:await loc.last.click();break
+                  except:pass
+              await page.screenshot(path='output/ready.png',full_page=True)
+              gen=page.get_by_role('button',name=re.compile('generate',re.I)).last
+              for i in range(90):
+                if not await gen.is_disabled():break
+                await page.wait_for_timeout(1000)
+              if await gen.is_disabled():raise RuntimeError('LoreMotion Generate remained disabled')
+              await gen.click();print('submitted');await page.screenshot(path='output/submitted.png',full_page=True)
+              deadline=time.time()+25*60;last=''
+              while time.time()<deadline:
+                await page.wait_for_timeout(4000);Path('output/network.json').write_text(json.dumps(net[-1500:],ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+                body=await page.locator('body').inner_text()
+                if body!=last:print('BODY',body[:8000].replace('\n',' | '));last=body
+                if any(t in body.lower() for t in ('sign in to continue','payment required','insufficient credits')):raise RuntimeError('LoreMotion requested account or payment')
+                if await save_media(page,ctx,initial,api_media):break
+                for label in ('Download','Download video','Save video'):
+                  loc=page.get_by_text(label,exact=False)
+                  if await loc.count():
+                    try:
+                      async with page.expect_download(timeout=5000) as d:await loc.last.click()
+                      await (await d.value).save_as('output/loremotion_source.mp4');break
+                    except:pass
+                if Path('output/loremotion_source.mp4').exists():break
+              if not Path('output/loremotion_source.mp4').exists():
+                await page.screenshot(path='output/timeout.png',full_page=True);raise TimeoutError('LoreMotion did not return video')
+              await page.screenshot(path='output/completed.png',full_page=True);await browser.close()
+          asyncio.run(main())
+          PY
+      - name: Validate motion and export high-bitrate 1080p
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/loremotion_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/loremotion_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.12:5:5:0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/BDA_heroine_LoreMotion_review_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          c=cv2.VideoCapture('output/loremotion_source.mp4');g=[];colour=[]
+          while True:
+            ok,f=c.read()
+            if not ok:break
+            g.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY));colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(g)<24:raise SystemExit(f'too few frames {len(g)}')
+          d=np.array([np.mean(cv2.absdiff(g[i],g[i-1])) for i in range(1,len(g))]);q={'frames':len(g),'mean_diff':float(d.mean()),'motion_ratio':float((d>.65).mean()),'colour_proxy':float(np.mean(colour))};open('output/qc.json','w').write(json.dumps(q,indent=2));print(q)
+          if q['motion_ratio']<.55:raise SystemExit('static/slideshow rejected')
+          if q['colour_proxy']<3:raise SystemExit('monochrome rejected')
+          PY
+          ffmpeg -y -i output/loremotion_source.mp4 -vf "fps=4,scale=360:-1,tile=6x1" -frames:v 1 output/contact.jpg || true
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loremotion-bda-heroine-v01
+          path: output/
+          compression-level: 0
+          retention-days: 7
