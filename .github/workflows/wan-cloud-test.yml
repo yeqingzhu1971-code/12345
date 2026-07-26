@@ -11,9 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,25 +21,69 @@ jobs:
           python-version: '3.11'
       - name: Install Gradio client
         run: pip install -U gradio_client
-      - name: Inspect official Wan Space API
+      - name: Generate a true-motion opening shot on official Wan cloud Space
         run: |
           mkdir -p output
-          python - <<'PY' 2>&1 | tee output/wan_api.log
-          import json, traceback
+          python - <<'PY' 2>&1 | tee output/wan_generation.log
+          import json, os, shutil, time, traceback
+          from pathlib import Path
           from gradio_client import Client
-          try:
-              client = Client('Wan-AI/Wan2.1')
-              info = client.view_api(return_format='dict')
-              print(json.dumps(info, ensure_ascii=False, indent=2, default=str))
-              open('output/wan_api.json','w',encoding='utf-8').write(json.dumps(info,ensure_ascii=False,indent=2,default=str))
-          except Exception:
-              traceback.print_exc()
-              raise
+
+          prompt = (
+              'Cinematic 16:9 continuous live-action shot, London Heathrow Terminal 3 private airline lounge on a rainy gray morning. '
+              'Low-saturation colour image, definitely not black and white, lead-gray overcast sky, no bright blue, almost no warm ambient lights. '
+              'A refined East Asian man around 28 years old, black casual shirt, straight black trousers, dark wool coat, thin gold-rim glasses, '
+              'sits alone in a small semi-enclosed four-seat quiet lounge by rain-streaked glass. He breathes naturally, blinks, lowers his gaze to a smartphone, '
+              'and his fingers make small realistic movements. Outside, an Emirates-style A380 and airport service vehicles move slowly in the rain. '
+              'Slow controlled dolly-in, coherent face and hands, natural fabric movement, realistic wet reflections, cinematic depth of field, no subtitles, no text, no narration.'
+          )
+          client = Client('Wan-AI/Wan2.1')
+          api = client.view_api(return_format='dict')
+          Path('output/wan_api.json').write_text(json.dumps(api, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+          start = client.predict(prompt, '1280*720', False, 20260726, api_name='/t2v_generation_async')
+          print('start response:', start)
+          Path('output/start_response.json').write_text(json.dumps(start, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+
+          deadline = time.time() + 95 * 60
+          last = None
+          while time.time() < deadline:
+              time.sleep(15)
+              try:
+                  result = client.predict(api_name='/status_refresh')
+                  last = result
+                  print('status:', result)
+                  video = result[0] if isinstance(result, (list, tuple)) and result else result
+                  path = None
+                  if isinstance(video, dict):
+                      v = video.get('video', video)
+                      if isinstance(v, dict):
+                          path = v.get('path') or v.get('url')
+                      elif isinstance(v, str):
+                          path = v
+                  elif isinstance(video, str):
+                      path = video
+                  if path and os.path.exists(path):
+                      shutil.copy2(path, 'output/wan_heathrow_true_motion_test.mp4')
+                      print('saved:', path)
+                      break
+              except Exception as e:
+                  print('poll error:', repr(e))
+          else:
+              raise TimeoutError(f'Wan generation did not finish; last={last!r}')
+
+          if not Path('output/wan_heathrow_true_motion_test.mp4').exists():
+              raise RuntimeError(f'No video file returned; last={last!r}')
           PY
-      - name: Upload API inspection
+      - name: Validate generated video
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,duration -show_entries format=duration,size -of json output/wan_heathrow_true_motion_test.mp4 | tee output/ffprobe.json
+          test -s output/wan_heathrow_true_motion_test.mp4
+      - name: Upload true-motion test
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wan-cloud-api-inspection
+          name: wan-heathrow-true-motion-test-v01
           path: output/
           retention-days: 7
