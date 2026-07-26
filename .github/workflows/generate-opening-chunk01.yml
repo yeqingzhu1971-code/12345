@@ -1,0 +1,46 @@
+name: Generate Opening Chunk 01 Wan 2.1
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install generation and QC tools
+        run: |
+          python -m pip install --upgrade gradio_client
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Generate true temporal segment on official Wan cloud Space
+        run: |
+          set -o pipefail
+          mkdir -p chunk01_output
+          python scripts/generate_chunk01_wan21.py 2>&1 | tee chunk01_output/generation.log
+      - name: Validate video motion container
+        run: |
+          set -euo pipefail
+          VIDEO=chunk01_output/opening_chunk01_heathrow_establishing_wan21.mp4
+          test -s "$VIDEO"
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,duration:format=duration,size,bit_rate -of json "$VIDEO" | tee chunk01_output/ffprobe.json
+          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf "fps=1,scale=480:-1,tile=5x1" -frames:v 1 chunk01_output/temporal_contact.jpg
+          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf "tblend=all_mode=difference,signalstats,metadata=print:file=chunk01_output/motion_stats.txt" -f null -
+      - name: Upload segment and QC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-chunk01-heathrow-wan21-v01
+          path: chunk01_output/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: warn
