@@ -1,0 +1,107 @@
+name: Wan I2V Female Motion Test
+
+on:
+  push:
+    branches: [wan-i2v-female-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install -U gradio_client
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Restore revised heroine reference
+        run: |
+          python - <<'PY'
+          import base64, json, urllib.request
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r:
+              data=json.load(r)
+          raw=base64.b64decode(data['content'])
+          open('female_ref.jpg','wb').write(raw)
+          print('reference bytes',len(raw))
+          PY
+          test -s female_ref.jpg
+      - name: Generate true-motion heroine shot on official Wan cloud Space
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/wan_i2v_generation.log
+          import json, os, shutil, time, urllib.request
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          prompt = (
+            '电影级真人实拍，单一连续镜头，北京舞蹈学院专业民族舞排练厅，初秋下午暖阳从高窗侧后方照入。'
+            '严格保持参考图中年轻中国女舞者的身份、五官比例、大眼睛、发髻、黑色练功服和自然肤色。'
+            '她刚结束高强度排练，胸肩有非常轻微自然呼吸，眨一次眼；听到镜头外同学喊她后，先有一瞬间的失神，随后自然转头看向镜头，露出明亮、天真而有感染力的笑容，梨涡轻轻出现。'
+            '汗湿的额前碎发随转头产生细微运动，背景几名舞者在浅景深中继续缓慢整理动作。'
+            '摄影机极慢、稳定地向前推进，动作真实克制，面部和手部连贯，布料运动自然，皮肤保留真实纹理，暖色侧逆光但不过曝，16比9彩色画面。'
+            '禁止身份漂移，禁止变脸，禁止畸形眼睛嘴巴手指，禁止塑料皮肤，禁止美颜滤镜，禁止黑白，禁止闪烁抖动，禁止静态图片缩放，禁止字幕文字水印。'
+          )
+          client=Client('Wan-AI/Wan2.1')
+          start=client.predict(prompt, handle_file('female_ref.jpg'), False, 20260726, api_name='/i2v_generation_async')
+          print('start:',start)
+          Path('output/start_response.json').write_text(json.dumps(start,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+
+          deadline=time.time()+135*60
+          last=None
+          while time.time()<deadline:
+              time.sleep(15)
+              try:
+                  result=client.predict(api_name='/status_refresh_1')
+                  last=result
+                  print('status:',result)
+                  Path('output/last_status.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+                  video=result[0] if isinstance(result,(list,tuple)) and result else result
+                  data=video.get('video',video) if isinstance(video,dict) else video
+                  path=None; url=None
+                  if isinstance(data,dict):
+                      path=data.get('path'); url=data.get('url')
+                  elif isinstance(data,str):
+                      path=data
+                  if path and os.path.exists(path):
+                      shutil.copy2(path,'output/female_turn_smile_wan_source.mp4')
+                      break
+                  if url:
+                      urllib.request.urlretrieve(url,'output/female_turn_smile_wan_source.mp4')
+                      break
+              except Exception as e:
+                  print('poll error:',repr(e))
+          else:
+              raise TimeoutError(f'Wan I2V timed out; last={last!r}')
+          if not Path('output/female_turn_smile_wan_source.mp4').exists():
+              raise RuntimeError(f'No video returned; last={last!r}')
+          PY
+      - name: Make 1080p high-bitrate review file
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_wan_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_turn_smile_wan_source.mp4 \
+            -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,unsharp=5:5:0.25:5:5:0.0,format=yuv420p" \
+            -c:v libx264 -preset slow -crf 14 -movflags +faststart -an \
+            output/female_turn_smile_wan_review_1080p.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_turn_smile_wan_review_1080p.mp4 | tee output/review_ffprobe.json
+          test -s output/female_turn_smile_wan_review_1080p.mp4
+      - name: Upload review clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-female-turn-smile-review-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
