@@ -1,0 +1,122 @@
+name: Generate LivePortrait Female Motion Clip
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          pip install -U gradio_client requests opencv-python-headless numpy
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg git
+      - name: Restore revised heroine and prepare driving motion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os,base64,requests
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          r=requests.get(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}',headers={'Authorization':f'Bearer {os.environ["GH_TOKEN"]}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},timeout=60)
+          r.raise_for_status();d=r.json();raw=base64.b64decode(d['content'])
+          open('female_ref.jpg','wb').write(raw);print('source bytes',len(raw))
+          PY
+          git clone --depth 1 https://github.com/KlingAIResearch/LivePortrait.git liveportrait_repo
+          test -s liveportrait_repo/assets/examples/driving/d0.mp4
+          ffmpeg -y -i liveportrait_repo/assets/examples/driving/d0.mp4 -t 4.5 -vf "crop='min(iw,ih)':'min(iw,ih)',scale=512:512:flags=lanczos,fps=25" -an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p driver_square.mp4
+          test -s female_ref.jpg
+          test -s driver_square.mp4
+      - name: Generate identity-preserving heroine motion
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client, handle_file
+
+          client=Client('KwaiVGI/LivePortrait',verbose=True)
+          source=handle_file('female_ref.jpg')
+          driver_dict={'video':handle_file('driver_square.mp4'),'subtitles':None}
+          try:
+            result=client.predict(source,driver_dict,True,True,True,api_name='/gpu_wrapped_execute_video')
+          except Exception as e:
+            print('dict video input failed, retrying direct file:',repr(e))
+            result=client.predict(source,handle_file('driver_square.mp4'),True,True,True,api_name='/gpu_wrapped_execute_video')
+          print('RESULT',repr(result))
+          Path('output/result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+
+          def media_path(x):
+            if isinstance(x,str) and os.path.exists(x):return x
+            if isinstance(x,dict):
+              for k in ('video','path','file','value'):
+                if k in x:
+                  p=media_path(x[k])
+                  if p:return p
+              for v in x.values():
+                p=media_path(v)
+                if p:return p
+            if isinstance(x,(list,tuple)):
+              for v in x:
+                p=media_path(v)
+                if p:return p
+            return None
+
+          candidates=[]
+          if isinstance(result,(list,tuple)):
+            for i,v in enumerate(result):
+              p=media_path(v)
+              if p:
+                dst=Path('output')/f'liveportrait_output_{i}.mp4'
+                shutil.copy2(p,dst);candidates.append(str(dst));print('copied',p,'->',dst)
+          else:
+            p=media_path(result)
+            if p:
+              dst=Path('output/liveportrait_output_0.mp4');shutil.copy2(p,dst);candidates.append(str(dst))
+          if not candidates:raise RuntimeError(f'No output video recovered from {result!r}')
+          Path('output/candidates.json').write_text(json.dumps(candidates,indent=2),encoding='utf-8')
+          PY
+      - name: Select, validate and export 1080p review
+        run: |
+          set -euo pipefail
+          # Prefer the first generated-only output; keep all alternatives for QC.
+          SRC=output/liveportrait_output_0.mp4
+          test -s "$SRC"
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json "$SRC" | tee output/source_ffprobe.json
+          ffmpeg -y -i "$SRC" -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.10:5:5:0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/BDA_heroine_liveportrait_review_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          p='output/liveportrait_output_0.mp4';c=cv2.VideoCapture(p);g=[];col=[]
+          while True:
+            ok,f=c.read()
+            if not ok:break
+            g.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY));col.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(g)<24:raise SystemExit(f'too few frames: {len(g)}')
+          d=np.array([np.mean(cv2.absdiff(g[i],g[i-1])) for i in range(1,len(g))])
+          q={'frames':len(g),'mean_diff':float(d.mean()),'motion_ratio':float((d>.30).mean()),'colour_proxy':float(np.mean(col))}
+          open('output/qc.json','w').write(json.dumps(q,indent=2));print(q)
+          if q['motion_ratio']<.45:raise SystemExit('motion quality gate failed')
+          if q['colour_proxy']<3:raise SystemExit('monochrome quality gate failed')
+          PY
+          ffmpeg -y -i "$SRC" -vf "fps=2,scale=384:-1,tile=8x1" -frames:v 1 output/temporal_contact.jpg || true
+          test -s output/BDA_heroine_liveportrait_review_1080p.mp4
+      - name: Upload true motion clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liveportrait-bda-heroine-v01
+          path: output/
+          compression-level: 0
+          retention-days: 7
