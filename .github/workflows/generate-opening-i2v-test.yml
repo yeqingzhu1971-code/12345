@@ -1,0 +1,43 @@
+name: Generate Opening Identity-Preserving I2V Test
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install clients and image tools
+        run: python -m pip install --upgrade gradio_client Pillow
+
+      - name: Generate continuous image-to-video shot
+        run: python scripts/generate_opening_i2v_test.py
+
+      - name: Validate temporal video
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          test -s video_i2v_output/shot_01_heathrow_private_lounge_i2v.mp4
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,duration -show_entries format=duration,size -of json video_i2v_output/shot_01_heathrow_private_lounge_i2v.mp4 | tee video_i2v_output/ffprobe.json
+          ffmpeg -hide_banner -loglevel error -i video_i2v_output/shot_01_heathrow_private_lounge_i2v.mp4 -vf "select='eq(n,0)+eq(n,45)+eq(n,90)+eq(n,135)+eq(n,176)',scale=512:-1,tile=5x1" -frames:v 1 video_i2v_output/temporal_contact.jpg
+
+      - name: Upload generated test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opening-private-lounge-i2v-test-v02
+          path: video_i2v_output/
+          retention-days: 14
+          if-no-files-found: warn
