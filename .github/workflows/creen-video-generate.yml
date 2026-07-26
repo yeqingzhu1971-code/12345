@@ -1,0 +1,197 @@
+name: Generate Creen Heroine Motion Clip
+
+on:
+  push:
+    branches: [creen-video-test-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install browser and media tools
+        run: |
+          pip install playwright opencv-python-headless numpy Pillow
+          playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Restore revised heroine reference
+        run: |
+          python - <<'PY'
+          import base64,json,urllib.request
+          from PIL import Image,ImageFile
+          ImageFile.LOAD_TRUNCATED_IMAGES=True
+          sha='1690eb6fedbf0b29dea2613d7dbd41d4f0f8819a'
+          with urllib.request.urlopen(f'https://api.github.com/repos/yeqingzhu1971-code/12345/git/blobs/{sha}') as r:d=json.load(r)
+          raw=base64.b64decode(d['content']);open('female_ref_raw.jpg','wb').write(raw)
+          im=Image.open('female_ref_raw.jpg').convert('RGB').resize((1024,576),Image.Resampling.LANCZOS)
+          im.save('female_ref.png',format='PNG',optimize=True)
+          print('reference',len(raw),im.size)
+          PY
+          test -s female_ref.png
+      - name: Submit and recover genuine Creen video
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/generation.log
+          import asyncio,base64,json,time,re
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          PROMPT=(
+            'Single uninterrupted cinematic live-action shot in an authentic Beijing Dance Academy Chinese ethnic and folk dance rehearsal classroom in warm early-autumn afternoon light. '
+            'Preserve exactly the young Chinese female dancer from the reference: same refined face, large expressive dark eyes, delicate nose and jaw, natural skin texture, black hair in a clean dance bun, black professional practice clothing, tall slender trained dancer proportions. '
+            'The actual teaching room is practical and institutional: blue-grey professional dance vinyl flooring, white square suspended ceiling panels with rectangular fluorescent lights, tall windows with beige curtains, warm wooden lower wall panels and wooden ballet barres, white walls, ceiling projector and wall speaker; no luxury studio styling. '
+            'She has just finished a demanding rehearsal. Her shoulders and chest show subtle natural breathing and she blinks once. A female classmate calls from just behind the camera. She pauses for a fraction of a second, turns her head naturally toward the camera, then gives a bright spontaneous smile with small dimples. '
+            'Several classmates in black practice clothes continue slow rehearsal movements in soft focus. Warm side-back sunlight catches a few sweat-damp loose hair strands while the room remains realistic rather than golden fantasy. '
+            'Extremely slow stable dolly-in, coherent face and anatomy, physically plausible hair and cloth motion, shallow 35mm cinematic depth of field, rich full colour, high detail. No dialogue, no subtitles, no text, no logo, no watermark, no identity drift, no face morphing, no crossed eyes, no warped mouth, no extra fingers, no plastic skin, no excessive orange, no black-and-white, no flicker, no frozen frames, no slideshow or zoom-only animation.'
+          )
+
+          def collect_urls(x):
+            out=[]
+            if isinstance(x,dict):
+              for k,v in x.items():
+                if isinstance(v,str) and v.startswith(('http://','https://')):
+                  lv=v.lower();lk=k.lower()
+                  if ('.mp4' in lv or '.webm' in lv or '.mov' in lv or 'video' in lk or 'result' in lk or 'output' in lk):out.append(v)
+                out.extend(collect_urls(v))
+            elif isinstance(x,(list,tuple)):
+              for v in x:out.extend(collect_urls(v))
+            return list(dict.fromkeys(out))
+
+          async def media_from_page(page,ctx,initial):
+            srcs=await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)")
+            for src in srcs:
+              if src in initial:continue
+              try:
+                if src.startswith('blob:'):
+                  b64=await page.evaluate("""async u=>{const a=new Uint8Array(await (await fetch(u)).arrayBuffer());let s='';for(let i=0;i<a.length;i+=32768)s+=String.fromCharCode(...a.subarray(i,i+32768));return btoa(s)}""",src);data=base64.b64decode(b64)
+                else:
+                  r=await ctx.request.get(src,timeout=180000);data=await r.body() if r.ok else b''
+                if len(data)>10000:
+                  Path('output/creen_source.mp4').write_bytes(data);Path('output/media_url.txt').write_text(src);return True
+              except Exception as e:print('media source error',repr(e),src)
+            return False
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+              ctx=await browser.new_context(viewport={'width':1440,'height':1050},locale='en-US',accept_downloads=True)
+              page=await ctx.new_page();records=[];candidate_urls=[]
+              page.on('console',lambda m:print('CONSOLE',m.type,m.text));page.on('pageerror',lambda e:print('PAGEERROR',e))
+              async def capture(resp):
+                u=resp.url.lower();ct=(resp.headers.get('content-type') or '').lower()
+                if '/api/' in u or 'video/' in ct or any(k in u for k in ['generate','task','upload','media']):
+                  rec={'status':resp.status,'url':resp.url,'ct':ct}
+                  if 'json' in ct:
+                    try:
+                      j=await resp.json();rec['json']=j;candidate_urls.extend(collect_urls(j))
+                    except Exception as e:rec['json_error']=repr(e)
+                  records.append(rec)
+              page.on('response',lambda r:asyncio.create_task(capture(r)))
+
+              await page.goto('https://www.creen.ai/image-to-video',wait_until='networkidle',timeout=120000)
+              await page.wait_for_timeout(7000)
+              # Wait for automatic guest account initialization.
+              for _ in range(60):
+                body=(await page.locator('body').inner_text()).lower()
+                if 'image to video' in body:break
+                await page.wait_for_timeout(1000)
+              initial=set(await page.evaluate("() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)"))
+              await page.locator('input[type=file][accept*="image/jpeg"]').set_input_files('female_ref.png')
+              await page.locator('textarea[placeholder="Describe what you want to create"]').fill(PROMPT)
+              await page.wait_for_timeout(4000)
+
+              # Open the resolution/aspect menu and choose the highest visible free option while keeping 16:9.
+              res_button=page.get_by_role('button',name=re.compile(r'\d+p\s*\|\s*16:9')).first
+              if await res_button.count():
+                try:
+                  await res_button.click();await page.wait_for_timeout(1000)
+                  menu_text=(await page.locator('body').inner_text())
+                  print('RESOLUTION MENU',menu_text[-5000:])
+                  for label in ['1080p','1024p','720p','768p']:
+                    loc=page.get_by_text(label,exact=True)
+                    if await loc.count():
+                      try:await loc.last.click();print('selected',label);break
+                      except Exception as e:print('resolution click failed',label,repr(e))
+                except Exception as e:print('resolution menu error',repr(e))
+
+              submit=page.locator("xpath=//button[.//*[name()='path' and starts-with(@d,'M12 20V4')]]").last
+              for i in range(120):
+                if not await submit.is_disabled():break
+                if i%15==0:print('waiting submit enable',i)
+                await page.wait_for_timeout(1000)
+              await page.screenshot(path='output/ready.png',full_page=True)
+              if await submit.is_disabled():raise RuntimeError('Creen generation submit button remained disabled')
+              await submit.click();print('submitted generation')
+              await page.screenshot(path='output/submitted.png',full_page=True)
+
+              deadline=time.time()+65*60;last='';visited_assets=False
+              while time.time()<deadline:
+                await page.wait_for_timeout(5000)
+                Path('output/network_responses.json').write_text(json.dumps(records[-2000:],ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+                body=await page.locator('body').inner_text()
+                if body!=last:print('BODY',body[:8000].replace('\n',' | '));last=body
+                # Prefer a video node created during this session.
+                if await media_from_page(page,ctx,initial):break
+                # Download API-returned result URLs, ignoring image assets and known inspiration samples.
+                for u in list(dict.fromkeys(candidate_urls)):
+                  lu=u.lower()
+                  if not any(x in lu for x in ['.mp4','.webm','.mov']):continue
+                  try:
+                    r=await ctx.request.get(u,timeout=180000);data=await r.body() if r.ok else b''
+                    if len(data)>10000:
+                      Path('output/creen_source.mp4').write_bytes(data);Path('output/media_url.txt').write_text(u);break
+                  except Exception as e:print('candidate download error',repr(e),u)
+                if Path('output/creen_source.mp4').exists():break
+                # The generator may finish in My Assets rather than inline.
+                low=body.lower()
+                if any(t in low for t in ['processing','generating','queued','creating']):continue
+                if not visited_assets and time.time()>deadline-58*60:
+                  try:
+                    await page.goto('https://www.creen.ai/my-assets',wait_until='networkidle',timeout=120000);await page.wait_for_timeout(5000);visited_assets=True;print('opened My Assets')
+                  except Exception as e:print('assets navigation error',repr(e))
+                elif visited_assets:
+                  await page.reload(wait_until='networkidle',timeout=120000);await page.wait_for_timeout(3000)
+              else:
+                await page.screenshot(path='output/timeout.png',full_page=True);raise TimeoutError('Creen did not return a generated video in 65 minutes')
+              if not Path('output/creen_source.mp4').exists():raise RuntimeError('No generated Creen media file recovered')
+              await page.screenshot(path='output/completed.png',full_page=True);await browser.close()
+          asyncio.run(main())
+          PY
+      - name: Validate genuine motion and export 1080p review
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/creen_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/creen_source.mp4 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,unsharp=5:5:0.12:5:5:0,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/BDA_heroine_turn_smile_review_1080p.mp4
+          python - <<'PY'
+          import cv2,numpy as np,json
+          c=cv2.VideoCapture('output/creen_source.mp4');gray=[];colour=[]
+          while True:
+            ok,f=c.read()
+            if not ok:break
+            gray.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY));colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(gray)<24:raise SystemExit(f'too few decoded frames: {len(gray)}')
+          d=np.array([np.mean(cv2.absdiff(gray[i],gray[i-1])) for i in range(1,len(gray))]);q={'frames':len(gray),'mean_adjacent_difference':float(d.mean()),'motion_ratio':float((d>.65).mean()),'colour_proxy':float(np.mean(colour))};print(q);open('output/qc.json','w').write(json.dumps(q,indent=2))
+          if q['motion_ratio']<.55:raise SystemExit('Rejected as static/slideshow-like')
+          if q['colour_proxy']<3:raise SystemExit('Rejected as monochrome')
+          PY
+          ffmpeg -y -i output/creen_source.mp4 -vf "fps=4,scale=360:-1,tile=6x1" -frames:v 1 output/temporal_contact.jpg || true
+          test -s output/BDA_heroine_turn_smile_review_1080p.mp4
+      - name: Upload genuine review clip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: creen-bda-heroine-motion-v01
+          path: output/
+          compression-level: 0
+          retention-days: 7
