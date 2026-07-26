@@ -58,7 +58,8 @@ def find_video(value: Any) -> tuple[str, str] | None:
 
 result = None
 history = []
-for attempt in range(60):
+# The official free cloud queue can take roughly 18–25 minutes at 720p.
+for attempt in range(120):
     time.sleep(15 if attempt else 5)
     try:
         status = client.predict(api_name="/status_refresh")
@@ -75,7 +76,7 @@ for attempt in range(60):
 
 (OUT / "poll_history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 if not result:
-    raise RuntimeError("Wan2.1 did not return a downloadable video within the polling window")
+    raise RuntimeError("Wan2.1 did not return a downloadable video within the 30-minute polling window")
 
 kind, source = result
 destination = OUT / "opening_chunk01_heathrow_establishing_wan21.mp4"
@@ -93,6 +94,7 @@ manifest = {
     "prompt": PROMPT,
     "output": destination.name,
     "submit_result": repr(submit),
+    "poll_attempts": len(history),
 }
 (OUT / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 print(json.dumps(manifest, ensure_ascii=False, indent=2), flush=True)
