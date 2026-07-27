@@ -1,0 +1,45 @@
+name: Probe Official LHM Avatar Space
+
+on:
+  push:
+    branches: [lhm-avatar-probe-v01]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect official LHM Gradio API
+        run: |
+          pip install -U gradio_client
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import json
+          from pathlib import Path
+          from gradio_client import Client
+          client=Client('3DAIGC/LHM', verbose=True)
+          try:
+              api=client.view_api(return_format='dict')
+          except TypeError:
+              api=client.view_api()
+          print('API',api)
+          Path('output/api.json').write_text(json.dumps(api,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+          PY
+      - name: Upload probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhm-space-api-probe-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
