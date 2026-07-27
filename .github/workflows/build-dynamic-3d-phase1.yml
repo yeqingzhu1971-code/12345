@@ -53,12 +53,34 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p scripts/phase1 output
-          gzip -dc scripts/phase1/build_dynamic_3d_phase1.py.gz > scripts/phase1/build_dynamic_3d_phase1.py
-          python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py
-          test -s assets/phase1/female_revised_reference.jpg
-          test -s assets/phase1/male_revised_reference.jpg
-          file assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg | tee reference_files.txt
-          sha256sum assets/phase1/*.jpg | tee reference_sha256.txt
+          {
+            echo "Repository files:"
+            ls -l scripts/phase1 assets/phase1
+            echo "Builder header:"
+            xxd -l 16 scripts/phase1/build_dynamic_3d_phase1.py.gz || true
+            BUILDER_GZ=scripts/phase1/build_dynamic_3d_phase1.py.gz
+            if ! gzip -t "$BUILDER_GZ" 2>/dev/null; then
+              echo "Builder was checked out as base64 text; decoding once."
+              base64 -d "$BUILDER_GZ" > scripts/phase1/build_dynamic_3d_phase1.decoded.py.gz
+              BUILDER_GZ=scripts/phase1/build_dynamic_3d_phase1.decoded.py.gz
+              gzip -t "$BUILDER_GZ"
+            fi
+            gzip -dc "$BUILDER_GZ" > scripts/phase1/build_dynamic_3d_phase1.py
+            python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py
+
+            for ref in assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg; do
+              test -s "$ref"
+              if ! head -c 2 "$ref" | od -An -tx1 | tr -d ' \n' | grep -qi '^ffd8$'; then
+                echo "$ref was checked out as base64 text; decoding once."
+                base64 -d "$ref" > "$ref.decoded"
+                mv "$ref.decoded" "$ref"
+              fi
+              test "$(head -c 2 "$ref" | od -An -tx1 | tr -d ' \n')" = "ffd8"
+            done
+            file assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg | tee reference_files.txt
+            sha256sum assets/phase1/*.jpg | tee reference_sha256.txt
+            wc -l scripts/phase1/build_dynamic_3d_phase1.py
+          } 2>&1 | tee output/restore.log
 
       - name: Build real meshes, skeletons, skinning, animations and full 3D environments
         run: |
@@ -144,7 +166,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ai-short-drama-dynamic-3d-phase1-v01
+          name: ai-short-drama-dynamic-3d-phase1-v02
           path: delivery/
           retention-days: 14
           compression-level: 0
