@@ -1,0 +1,49 @@
+name: Probe LHM Gradio Config V01
+
+on:
+  push:
+    branches: [lhm-config-probe-v01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download and parse current LHM Space config
+        run: |
+          pip install requests
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import json, requests
+          from pathlib import Path
+          u='https://3daigc-lhm.hf.space/config'
+          r=requests.get(u,timeout=120,headers={'User-Agent':'Mozilla/5.0'})
+          print('status',r.status_code,'type',r.headers.get('content-type'),'bytes',len(r.content))
+          r.raise_for_status()
+          Path('output/config.raw').write_bytes(r.content)
+          d=r.json();Path('output/config.json').write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf-8')
+          values=[]
+          for c in d.get('components',[]):
+              t=c.get('type');p=c.get('props',{});v=p.get('value')
+              if t in {'video','dataset','image'} or v is not None:
+                  values.append({'id':c.get('id'),'type':t,'value':v,'props':p})
+          Path('output/component_values.json').write_text(json.dumps(values,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+          for x in values:
+              print('COMP',x['id'],x['type'],str(x['value'])[:2000])
+          PY
+      - name: Upload config probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhm-config-probe-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
