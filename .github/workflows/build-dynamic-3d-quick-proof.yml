@@ -3,6 +3,8 @@ name: Build Dynamic 3D Quick Proof
 on:
   push:
     branches: [dynamic-3d-quick-proof-v01]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -102,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dynamic-3d-female-quick-proof-v01
+          name: dynamic-3d-female-quick-proof-v02
           path: delivery/
           retention-days: 14
           compression-level: 0
