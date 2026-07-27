@@ -63,17 +63,7 @@ jobs:
             base64 -d output/builder.b64 > output/build_dynamic_3d_phase1.py.gz
             gzip -t output/build_dynamic_3d_phase1.py.gz
             gzip -dc output/build_dynamic_3d_phase1.py.gz > scripts/phase1/build_dynamic_3d_phase1.py
-
-            python - <<'PY'
-          from pathlib import Path
-          path=Path('scripts/phase1/build_dynamic_3d_phase1.py')
-          text=path.read_text(encoding='utf-8')
-          old='''    import mpfb  # type: ignore\n\n    defaults = {\n'''
-          new='''    import mpfb  # type: ignore\n\n    # MPFB is a Blender extension. A source checkout has no registered extension\n    # repository, so provide its writable user path before LocationService starts.\n    mpfb_user_home = OUT / "mpfb_user"\n    mpfb_user_home.mkdir(parents=True, exist_ok=True)\n    bpy.utils.extension_path_user = lambda package, *args, **kwargs: str(mpfb_user_home)\n\n    defaults = {\n'''
-          if old not in text:
-              raise SystemExit('MPFB bootstrap insertion point was not found')
-          path.write_text(text.replace(old,new,1),encoding='utf-8')
-          PY
+            python scripts/phase1/runtime_patch.py scripts/phase1/build_dynamic_3d_phase1.py
             python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py
 
             for ref in assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg; do
@@ -88,7 +78,7 @@ jobs:
             done
             file assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg | tee reference_files.txt
             sha256sum assets/phase1/*.jpg | tee reference_sha256.txt
-            sha256sum scripts/phase1/build_dynamic_3d_phase1.py | tee builder_sha256.txt
+            sha256sum scripts/phase1/build_dynamic_3d_phase1.py scripts/phase1/runtime_patch.py | tee builder_sha256.txt
             wc -c output/builder.b64 output/build_dynamic_3d_phase1.py.gz scripts/phase1/build_dynamic_3d_phase1.py
             wc -l scripts/phase1/build_dynamic_3d_phase1.py
           } 2>&1 | tee output/restore.log
@@ -177,7 +167,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ai-short-drama-dynamic-3d-phase1-v04
+          name: ai-short-drama-dynamic-3d-phase1-v05
           path: delivery/
           retention-days: 14
           compression-level: 0
