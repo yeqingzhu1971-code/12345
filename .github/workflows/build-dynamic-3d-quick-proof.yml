@@ -21,6 +21,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xz-utils curl git ffmpeg file libxrender1 libxi6 libxkbcommon0 libsm6 libgl1 libegl1 libxfixes3 libx11-6
+          python -m pip install --upgrade pip
+          pip install numpy opencv-python-headless
 
       - name: Download Blender 4.5 LTS
         run: |
@@ -41,7 +43,7 @@ jobs:
           gzip -t output/builder.py.gz
           gzip -dc output/builder.py.gz > scripts/phase1/build_dynamic_3d_phase1.py
           python scripts/phase1/runtime_patch.py scripts/phase1/build_dynamic_3d_phase1.py
-          python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py
+          python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py scripts/phase1/prepare_dynamic_proof_v03.py
           test -s assets/phase1/female_revised_reference.jpg
           test -s assets/phase1/male_revised_reference.jpg
 
@@ -57,54 +59,57 @@ jobs:
             2>&1 | tee output/build.log
           test -s output/AI_Short_Drama_Dynamic3D_Phase1_v01.blend
 
-      - name: Prepare a 48-frame native 1080p female proof
+      - name: Prepare a closer 72-frame native 1080p female proof
         run: |
           set -euo pipefail
           BLEND="$PWD/output/AI_Short_Drama_Dynamic3D_Phase1_v01.blend"
-          QUICK="$PWD/output/BDA_Female_Dynamic_Quick.blend"
-          OUTFILE="$PWD/output/BDA_Female_Dynamic_Quick_1080p.mp4"
-          "$BLENDER_BIN" --background "$BLEND" --python-expr "import bpy; s=bpy.data.scenes['BDA_Female_Dynamic']; s.frame_start=1; s.frame_end=48; s.render.filepath=r'$OUTFILE'; bpy.context.window.scene=s if bpy.context.window else None; bpy.ops.wm.save_as_mainfile(filepath=r'$QUICK')"
-          timeout 7200s "$BLENDER_BIN" --background "$QUICK" --scene BDA_Female_Dynamic --render-anim 2>&1 | tee output/render_quick.log
+          QUICK="$PWD/output/BDA_Female_Dynamic_Close_v03.blend"
+          OUTFILE="$PWD/output/BDA_Female_Dynamic_Close_v03_1080p.mp4"
+          "$BLENDER_BIN" --background "$BLEND" \
+            --python scripts/phase1/prepare_dynamic_proof_v03.py -- "$QUICK" "$OUTFILE" \
+            2>&1 | tee output/prepare_close.log
+          timeout 7200s "$BLENDER_BIN" --background "$QUICK" --scene BDA_Female_Dynamic --render-anim \
+            2>&1 | tee output/render_close.log
           test -s "$OUTFILE"
 
-      - name: Validate real temporal motion
+      - name: Validate real temporal motion, colour and native resolution
         run: |
           set -euo pipefail
-          VIDEO=output/BDA_Female_Dynamic_Quick_1080p.mp4
+          VIDEO=output/BDA_Female_Dynamic_Close_v03_1080p.mp4
           ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json "$VIDEO" | tee output/ffprobe.json
           python - <<'PY'
           import cv2,json,numpy as np
-          p='output/BDA_Female_Dynamic_Quick_1080p.mp4'; c=cv2.VideoCapture(p); frames=[]; colour=[]
+          p='output/BDA_Female_Dynamic_Close_v03_1080p.mp4'; c=cv2.VideoCapture(p); frames=[]; colour=[]
           while True:
               ok,f=c.read()
               if not ok: break
               frames.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY))
               colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
-          if len(frames)<40: raise SystemExit(f'insufficient frames: {len(frames)}')
+          if len(frames)<68: raise SystemExit(f'insufficient frames: {len(frames)}')
           d=np.array([np.mean(cv2.absdiff(frames[i],frames[i-1])) for i in range(1,len(frames))])
-          q={'frames':len(frames),'mean_diff':float(d.mean()),'motion_ratio':float((d>.2).mean()),'colour_proxy':float(np.mean(colour))}
+          q={'frames':len(frames),'mean_diff':float(d.mean()),'motion_ratio':float((d>.12).mean()),'colour_proxy':float(np.mean(colour))}
           open('output/motion_qc.json','w').write(json.dumps(q,indent=2)); print(q)
-          if q['motion_ratio']<.50: raise SystemExit('motion gate failed')
-          if q['colour_proxy']<2.0: raise SystemExit('colour gate failed')
+          if q['motion_ratio']<.65: raise SystemExit('motion gate failed')
+          if q['colour_proxy']<4.0: raise SystemExit('colour gate failed')
           PY
-          ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" -vf "fps=4,scale=480:-1,tile=8x1" -frames:v 1 output/contact.jpg || true
+          ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" -vf "select='eq(n,0)+eq(n,12)+eq(n,24)+eq(n,36)+eq(n,48)+eq(n,60)+eq(n,71)',scale=480:-1,tile=7x1" -frames:v 1 output/contact_close.jpg || true
 
       - name: Package quick proof
         if: always()
         run: |
           mkdir -p delivery
-          cp -f output/BDA_Female_Dynamic_Quick_1080p.mp4 delivery/ 2>/dev/null || true
-          cp -f output/BDA_Female_Dynamic_Quick.blend delivery/ 2>/dev/null || true
+          cp -f output/BDA_Female_Dynamic_Close_v03_1080p.mp4 delivery/ 2>/dev/null || true
+          cp -f output/BDA_Female_Dynamic_Close_v03.blend delivery/ 2>/dev/null || true
           cp -f output/Female_Lead_Rigged_Animated_v01.glb delivery/ 2>/dev/null || true
           cp -f output/BDA_Classroom_3D_v01.glb delivery/ 2>/dev/null || true
-          cp -f output/ffprobe.json output/motion_qc.json output/contact.jpg output/*.log delivery/ 2>/dev/null || true
+          cp -f output/ffprobe.json output/motion_qc.json output/contact_close.jpg output/*.log delivery/ 2>/dev/null || true
           find delivery -maxdepth 1 -type f -printf '%f %s bytes\n' | sort | tee delivery/sizes.txt
 
       - name: Upload quick dynamic proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dynamic-3d-female-quick-proof-v02
+          name: dynamic-3d-female-close-proof-v03
           path: delivery/
           retention-days: 14
           compression-level: 0
