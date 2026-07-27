@@ -46,6 +46,10 @@ jobs:
           Path('mimo2.mp4').write_bytes(r.content)
 
           client=Client('3DAIGC/LHM', verbose=True, download_files=True)
+          # The hidden Gradio State used by core_fn must be initialized in the
+          # same client session before submitting the image and motion.
+          print('prepare working dir', client.predict(api_name='/prepare_working_dir'))
+
           job=client.submit(
               handle_file(str(image)),
               {'video': handle_file('mimo2.mp4'), 'subtitles': None},
@@ -106,7 +110,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lhm-female-avatar-v03
+          name: lhm-female-avatar-v04
           path: output/
           retention-days: 14
           compression-level: 0
