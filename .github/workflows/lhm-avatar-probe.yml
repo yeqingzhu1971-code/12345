@@ -1,0 +1,58 @@
+name: Probe Official LHM Avatar Space
+
+on:
+  push:
+    branches: [lhm-avatar-probe-v01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect official LHM Gradio API and example motion files
+        run: |
+          pip install -U gradio_client requests
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import json, requests
+          from pathlib import Path
+          from gradio_client import Client
+
+          client=Client('3DAIGC/LHM', verbose=True)
+          try:
+              api=client.view_api(return_format='dict')
+          except TypeError:
+              api=client.view_api()
+          Path('output/api.json').write_text(json.dumps(api,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+
+          urls=[
+              'https://3daigc-lhm.hf.space/config',
+              'https://3daigc-lhm.hf.space/info',
+              'https://huggingface.co/api/spaces/3DAIGC/LHM',
+          ]
+          for i,u in enumerate(urls):
+              r=requests.get(u,timeout=60,headers={'User-Agent':'Mozilla/5.0'})
+              print('GET',u,r.status_code,r.headers.get('content-type'),len(r.content))
+              Path(f'output/http_{i}.txt').write_bytes(r.content)
+              if 'json' in (r.headers.get('content-type') or '').lower():
+                  try:
+                      obj=r.json()
+                      Path(f'output/http_{i}.json').write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
+                  except Exception as e: print('JSON error',repr(e))
+          PY
+      - name: Upload probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhm-space-api-probe-v02
+          path: output/
+          retention-days: 7
+          compression-level: 0
