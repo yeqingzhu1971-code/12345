@@ -1,0 +1,119 @@
+name: Generate High Fidelity LHM Female Avatar
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install client and media tools
+        run: |
+          pip install -U gradio_client requests opencv-python-headless numpy
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Download built-in motion and run official LHM avatar reconstruction
+        run: |
+          set -o pipefail
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/lhm_generation.log
+          import json, os, shutil, time
+          from pathlib import Path
+          import requests
+          from gradio_client import Client, handle_file
+
+          image=Path('assets/lhm/female_fullbody_revised_v01.jpg')
+          if not image.exists() or image.stat().st_size < 10000:
+              raise RuntimeError('Revised full-body heroine reference is missing')
+
+          motion_url='https://3daigc-lhm.hf.space/gradio_api/file=/tmp/gradio/4ecf1eed59bf48f624ad5c03435b5ae6f445dc0dbc7ab04c6c755b519809edff/ex5_origin.mp4'
+          r=requests.get(motion_url,timeout=180,headers={'User-Agent':'Mozilla/5.0'})
+          print('motion download',r.status_code,r.headers.get('content-type'),len(r.content))
+          r.raise_for_status()
+          Path('motion_ex5.mp4').write_bytes(r.content)
+
+          client=Client('3DAIGC/LHM', verbose=True, download_files=True)
+          try:
+              client.predict(handle_file(str(image)), api_name='/assert_input_image')
+          except Exception as e:
+              print('assert endpoint',repr(e))
+          try:
+              client.predict(api_name='/prepare_working_dir')
+          except Exception as e:
+              print('prepare endpoint',repr(e))
+
+          job=client.submit(
+              handle_file(str(image)),
+              {'video': handle_file('motion_ex5.mp4'), 'subtitles': None},
+              api_name='/core_fn'
+          )
+          while not job.done():
+              print('LHM generating...',job.status())
+              time.sleep(15)
+          result=job.result()
+          print('RESULT',repr(result))
+          Path('output/result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+
+          def path_from(x):
+              if isinstance(x,str) and os.path.exists(x): return x
+              if isinstance(x,dict):
+                  for k in ('path','video','value','file'):
+                      if k in x:
+                          p=path_from(x[k])
+                          if p:return p
+                  for v in x.values():
+                      p=path_from(v)
+                      if p:return p
+              if isinstance(x,(list,tuple)):
+                  for v in reversed(x):
+                      p=path_from(v)
+                      if p:return p
+              return None
+
+          if not isinstance(result,(list,tuple)) or len(result)<2:
+              raise RuntimeError(f'Unexpected LHM result: {result!r}')
+          processed=path_from(result[0]); rendered=path_from(result[1])
+          if processed: shutil.copy2(processed,'output/female_lhm_processed.png')
+          if not rendered: raise RuntimeError('No rendered video returned by LHM')
+          shutil.copy2(rendered,'output/female_lhm_avatar_source.mp4')
+          print('saved rendered',rendered,Path('output/female_lhm_avatar_source.mp4').stat().st_size)
+          PY
+      - name: Validate temporal motion and export review masters
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_lhm_avatar_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_lhm_avatar_source.mp4 -vf "scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_lhm_avatar_review_1080x1920.mp4
+          ffmpeg -y -i output/female_lhm_avatar_source.mp4 -vf "scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:white,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_lhm_avatar_review_1920x1080.mp4
+          python - <<'PY'
+          import cv2,json,numpy as np
+          p='output/female_lhm_avatar_source.mp4'; c=cv2.VideoCapture(p); frames=[]; colour=[]
+          while True:
+              ok,f=c.read()
+              if not ok:break
+              frames.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY))
+              colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(frames)<24:raise SystemExit(f'too few decoded frames {len(frames)}')
+          d=np.array([np.mean(cv2.absdiff(frames[i],frames[i-1])) for i in range(1,len(frames))])
+          q={'frames':len(frames),'mean_diff':float(d.mean()),'p90_diff':float(np.percentile(d,90)),'motion_ratio':float((d>.35).mean()),'colour_proxy':float(np.mean(colour))}
+          print(q);open('output/motion_qc.json','w').write(json.dumps(q,indent=2))
+          if q['motion_ratio']<.45:raise SystemExit('LHM output rejected as mostly static')
+          if q['colour_proxy']<3:raise SystemExit('LHM output rejected as monochrome')
+          PY
+          ffmpeg -hide_banner -loglevel error -y -i output/female_lhm_avatar_source.mp4 -vf "fps=2,scale=240:-1,tile=8x1" -frames:v 1 output/contact.jpg || true
+      - name: Upload LHM avatar proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhm-female-avatar-v01
+          path: output/
+          retention-days: 14
+          compression-level: 0
