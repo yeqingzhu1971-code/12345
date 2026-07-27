@@ -1,4 +1,4 @@
-name: Probe LHM Web UI V01
+name: Generate LHM Heroine Through Web UI
 
 on:
   pull_request:
@@ -9,46 +9,174 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Inspect current LHM browser controls
+
+      - name: Install browser and media tools
         run: |
-          pip install playwright
+          pip install playwright opencv-python-headless numpy
           playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Generate the revised full-body heroine through the official LHM interface
+        run: |
+          set -o pipefail
           mkdir -p output
-          python - <<'PY' 2>&1 | tee output/probe.log
-          import asyncio,json
+          python - <<'PY' 2>&1 | tee output/browser_generation.log
+          import asyncio, base64, json, time
           from pathlib import Path
           from playwright.async_api import async_playwright
 
+          IMAGE='assets/lhm/female_fullbody_revised_v01.jpg'
+
+          async def save_video(page, context, src):
+              if src.startswith('blob:'):
+                  encoded=await page.evaluate("""async (u)=>{
+                    const a=new Uint8Array(await (await fetch(u)).arrayBuffer());
+                    let s=''; const n=32768;
+                    for(let i=0;i<a.length;i+=n) s+=String.fromCharCode(...a.subarray(i,i+n));
+                    return btoa(s);
+                  }""",src)
+                  data=base64.b64decode(encoded)
+              else:
+                  if src.startswith('/'):
+                      src='https://3daigc-lhm.hf.space'+src
+                  r=await context.request.get(src,timeout=300000)
+                  print('video GET',r.status,src)
+                  if not r.ok:
+                      return False
+                  data=await r.body()
+              print('video bytes',len(data))
+              if len(data)<10000:
+                  return False
+              Path('output/female_lhm_avatar_source.mp4').write_bytes(data)
+              Path('output/video_source.txt').write_text(src,encoding='utf-8')
+              return True
+
           async def main():
               async with async_playwright() as p:
-                  b=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
-                  page=await b.new_page(viewport={'width':1600,'height':1200})
+                  browser=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required'])
+                  context=await browser.new_context(viewport={'width':1600,'height':1200},locale='en-US',accept_downloads=True)
+                  page=await context.new_page()
+                  network=[]
                   page.on('console',lambda m:print('CONSOLE',m.type,m.text))
                   page.on('pageerror',lambda e:print('PAGEERROR',e))
-                  await page.goto('https://3daigc-lhm.hf.space/',wait_until='networkidle',timeout=180000)
+                  async def capture(resp):
+                      u=resp.url.lower();ct=(resp.headers.get('content-type') or '').lower()
+                      if 'gradio_api' in u or 'queue' in u or 'video/' in ct:
+                          network.append({'status':resp.status,'url':resp.url,'content_type':ct})
+                  page.on('response',capture)
+
+                  await page.goto('https://3daigc-lhm.hf.space/',wait_until='domcontentloaded',timeout=180000)
+                  await page.wait_for_selector('#content_image',timeout=180000)
                   await page.wait_for_timeout(8000)
-                  controls=await page.evaluate("""() => [...document.querySelectorAll('input,button,textarea,video,img,[role=button]')].map((e,i)=>({i,tag:e.tagName,type:e.type||'',text:(e.innerText||e.value||e.alt||'').trim().slice(0,300),aria:e.getAttribute('aria-label'),accept:e.accept||'',src:(e.currentSrc||e.src||'').slice(0,500),cls:e.className?.toString().slice(0,500),outer:e.outerHTML.slice(0,800)}))""")
-                  Path('output/controls.json').write_text(json.dumps(controls,ensure_ascii=False,indent=2),encoding='utf-8')
-                  print(json.dumps(controls,ensure_ascii=False,indent=2)[:50000])
-                  body=await page.locator('body').inner_text()
-                  Path('output/body.txt').write_text(body,encoding='utf-8')
-                  await page.screenshot(path='output/page.png',full_page=True)
-                  await b.close()
+                  Path('output/initial_body.txt').write_text(await page.locator('body').inner_text(),encoding='utf-8')
+                  await page.screenshot(path='output/initial.png',full_page=True)
+
+                  upload=page.locator('#content_image input[type=file]')
+                  if not await upload.count():
+                      upload=page.locator('input[type=file]').first
+                  await upload.set_input_files(IMAGE)
+                  print('reference uploaded')
+                  await page.wait_for_timeout(10000)
+                  await page.screenshot(path='output/reference_uploaded.png',full_page=True)
+
+                  # The official app initializes the target-motion component with one of its
+                  # bundled SMPL-X motion examples, so no unsupported custom state injection is used.
+                  videos=await page.evaluate("""() => [...document.querySelectorAll('video')].map((v,i)=>({i,src:v.currentSrc||v.src||'',outer:v.outerHTML.slice(0,1000)}))""")
+                  print('initial videos',json.dumps(videos,ensure_ascii=False,indent=2))
+                  Path('output/initial_videos.json').write_text(json.dumps(videos,ensure_ascii=False,indent=2),encoding='utf-8')
+
+                  button=page.locator('#openlrm_generate button')
+                  if not await button.count():
+                      button=page.get_by_role('button',name='Generate',exact=True)
+                  if not await button.count():
+                      button=page.get_by_text('Generate',exact=True)
+                  await button.first.click()
+                  print('generate clicked')
+                  await page.screenshot(path='output/submitted.png',full_page=True)
+
+                  deadline=time.time()+95*60
+                  previous=''
+                  recovered=False
+                  while time.time()<deadline:
+                      await page.wait_for_timeout(10000)
+                      body=await page.locator('body').inner_text()
+                      compact=' | '.join(x.strip() for x in body.splitlines() if x.strip())
+                      if compact!=previous:
+                          print('BODY',compact[:8000])
+                          previous=compact
+                      Path('output/latest_body.txt').write_text(body,encoding='utf-8')
+                      Path('output/network.json').write_text(json.dumps(network[-2000:],ensure_ascii=False,indent=2),encoding='utf-8')
+
+                      output=page.locator('#openlrm_render_video video')
+                      if await output.count():
+                          src=await output.first.evaluate("v=>v.currentSrc||v.src||''")
+                          duration=await output.first.evaluate("v=>Number.isFinite(v.duration)?v.duration:0")
+                          ready=await output.first.evaluate("v=>v.readyState")
+                          print('output candidate',src,'duration',duration,'ready',ready)
+                          if src and duration>0 and ready>=1 and await save_video(page,context,src):
+                              recovered=True
+                              break
+
+                      # Fallback: inspect videos that appeared after generation, taking the last
+                      # non-empty media source rather than the bundled target-motion preview.
+                      sources=await page.evaluate("""() => [...document.querySelectorAll('video,video source')].map(e=>e.currentSrc||e.src||e.getAttribute('src')||'').filter(Boolean)""")
+                      if len(sources)>1:
+                          for src in reversed(sources):
+                              if await save_video(page,context,src):
+                                  recovered=True
+                                  break
+                      if recovered:
+                          break
+
+                      low=body.lower()
+                      if any(x in low for x in ['runtime error','out of quota','gpu quota exceeded','failed to generate','application error']):
+                          await page.screenshot(path='output/error.png',full_page=True)
+                          raise RuntimeError('LHM interface reported an execution error: '+compact[-2000:])
+
+                  await page.screenshot(path='output/completed_or_timeout.png',full_page=True)
+                  if not recovered:
+                      raise TimeoutError('The LHM interface did not expose a generated video within 95 minutes')
+                  await browser.close()
+
           asyncio.run(main())
           PY
-      - name: Upload UI probe
+
+      - name: Validate temporal motion and export review masters
+        run: |
+          set -euo pipefail
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt,duration -show_entries format=duration,size,bit_rate -of json output/female_lhm_avatar_source.mp4 | tee output/source_ffprobe.json
+          ffmpeg -y -i output/female_lhm_avatar_source.mp4 -vf "scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_lhm_avatar_review_1080x1920.mp4
+          ffmpeg -y -i output/female_lhm_avatar_source.mp4 -vf "scale=1080:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:white,format=yuv420p" -c:v libx264 -preset slow -crf 14 -movflags +faststart -an output/female_lhm_avatar_review_1920x1080.mp4
+          python - <<'PY'
+          import cv2,json,numpy as np
+          p='output/female_lhm_avatar_source.mp4';c=cv2.VideoCapture(p);frames=[];colour=[]
+          while True:
+              ok,f=c.read()
+              if not ok:break
+              frames.append(cv2.cvtColor(f,cv2.COLOR_BGR2GRAY))
+              colour.append(float(np.mean(np.max(f,axis=2)-np.min(f,axis=2))))
+          if len(frames)<24:raise SystemExit(f'too few decoded frames: {len(frames)}')
+          d=np.array([np.mean(cv2.absdiff(frames[i],frames[i-1])) for i in range(1,len(frames))])
+          q={'frames':len(frames),'mean_diff':float(d.mean()),'p90_diff':float(np.percentile(d,90)),'motion_ratio':float((d>.35).mean()),'colour_proxy':float(np.mean(colour))}
+          open('output/motion_qc.json','w').write(json.dumps(q,indent=2));print(q)
+          if q['motion_ratio']<.45:raise SystemExit('rejected as mostly static')
+          if q['colour_proxy']<3:raise SystemExit('rejected as monochrome')
+          PY
+          ffmpeg -hide_banner -loglevel error -y -i output/female_lhm_avatar_source.mp4 -vf "fps=2,scale=240:-1,tile=8x1" -frames:v 1 output/contact.jpg || true
+
+      - name: Upload high-fidelity avatar proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lhm-ui-probe-v01
+          name: lhm-female-webui-avatar-v01
           path: output/
-          retention-days: 7
+          retention-days: 14
           compression-level: 0
