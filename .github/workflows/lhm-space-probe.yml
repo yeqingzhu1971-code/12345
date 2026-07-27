@@ -3,6 +3,8 @@ name: Probe Official LHM Avatar Space
 on:
   push:
     branches: [lhm-avatar-probe-v01]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
