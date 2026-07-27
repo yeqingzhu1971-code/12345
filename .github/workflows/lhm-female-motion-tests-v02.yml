@@ -3,6 +3,8 @@ name: Compare Calmer LHM Heroine Motions V02
 on:
   push:
     branches: [lhm-female-motion-tests-v02]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -89,7 +91,6 @@ jobs:
                       chosen=True
                       break
               if not chosen:
-                  # Fallback: use the second Gradio dataset component and click its indexed sample.
                   datasets=page.locator('[data-testid="dataset"], .dataset, gradio-dataset')
                   print('dataset fallback count',await datasets.count())
                   if await datasets.count()<2:
