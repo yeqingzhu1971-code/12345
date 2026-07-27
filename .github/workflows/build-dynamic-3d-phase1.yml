@@ -56,22 +56,20 @@ jobs:
           {
             echo "Repository files:"
             ls -l scripts/phase1 assets/phase1
-            echo "Builder header:"
-            xxd -l 16 scripts/phase1/build_dynamic_3d_phase1.py.gz || true
-            BUILDER_GZ=scripts/phase1/build_dynamic_3d_phase1.py.gz
-            if ! gzip -t "$BUILDER_GZ" 2>/dev/null; then
-              echo "Builder was checked out as base64 text; decoding once."
-              base64 -d "$BUILDER_GZ" > scripts/phase1/build_dynamic_3d_phase1.decoded.py.gz
-              BUILDER_GZ=scripts/phase1/build_dynamic_3d_phase1.decoded.py.gz
-              gzip -t "$BUILDER_GZ"
-            fi
-            gzip -dc "$BUILDER_GZ" > scripts/phase1/build_dynamic_3d_phase1.py
+
+            PARTS=(scripts/phase1/builder.part00.b64 scripts/phase1/builder.part01.b64 scripts/phase1/builder.part02.b64)
+            for part in "${PARTS[@]}"; do test -s "$part"; done
+            cat "${PARTS[@]}" | tr -d '\r\n\t ' > output/builder.b64
+            base64 -d output/builder.b64 > output/build_dynamic_3d_phase1.py.gz
+            gzip -t output/build_dynamic_3d_phase1.py.gz
+            gzip -dc output/build_dynamic_3d_phase1.py.gz > scripts/phase1/build_dynamic_3d_phase1.py
             python -m py_compile scripts/phase1/build_dynamic_3d_phase1.py
 
             for ref in assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg; do
               test -s "$ref"
-              if ! head -c 2 "$ref" | od -An -tx1 | tr -d ' \n' | grep -qi '^ffd8$'; then
-                echo "$ref was checked out as base64 text; decoding once."
+              MAGIC="$(head -c 2 "$ref" | od -An -tx1 | tr -d ' \n')"
+              if [ "$MAGIC" != "ffd8" ]; then
+                echo "$ref was stored as base64 text; decoding once."
                 base64 -d "$ref" > "$ref.decoded"
                 mv "$ref.decoded" "$ref"
               fi
@@ -79,6 +77,7 @@ jobs:
             done
             file assets/phase1/female_revised_reference.jpg assets/phase1/male_revised_reference.jpg | tee reference_files.txt
             sha256sum assets/phase1/*.jpg | tee reference_sha256.txt
+            wc -c output/builder.b64 output/build_dynamic_3d_phase1.py.gz scripts/phase1/build_dynamic_3d_phase1.py
             wc -l scripts/phase1/build_dynamic_3d_phase1.py
           } 2>&1 | tee output/restore.log
 
@@ -128,7 +127,7 @@ jobs:
             ])
             data=json.loads(raw)
             stream=data['streams'][0]
-            width=int(stream['width']);height=int(stream['height'])
+            width=int(stream['width']); height=int(stream['height'])
             frames=int(stream.get('nb_frames') or 0)
             size=int(data['format']['size'])
             if width != 1920 or height != 1080:
@@ -166,7 +165,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ai-short-drama-dynamic-3d-phase1-v02
+          name: ai-short-drama-dynamic-3d-phase1-v03
           path: delivery/
           retention-days: 14
           compression-level: 0
