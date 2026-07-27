@@ -3,6 +3,8 @@ name: Probe LHM Gradio Config V01
 on:
   push:
     branches: [lhm-config-probe-v01]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
