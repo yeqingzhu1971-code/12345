@@ -1,0 +1,54 @@
+name: Probe LHM Web UI V01
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect current LHM browser controls
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+          mkdir -p output
+          python - <<'PY' 2>&1 | tee output/probe.log
+          import asyncio,json
+          from pathlib import Path
+          from playwright.async_api import async_playwright
+
+          async def main():
+              async with async_playwright() as p:
+                  b=await p.chromium.launch(headless=True,args=['--disable-dev-shm-usage'])
+                  page=await b.new_page(viewport={'width':1600,'height':1200})
+                  page.on('console',lambda m:print('CONSOLE',m.type,m.text))
+                  page.on('pageerror',lambda e:print('PAGEERROR',e))
+                  await page.goto('https://3daigc-lhm.hf.space/',wait_until='networkidle',timeout=180000)
+                  await page.wait_for_timeout(8000)
+                  controls=await page.evaluate("""() => [...document.querySelectorAll('input,button,textarea,video,img,[role=button]')].map((e,i)=>({i,tag:e.tagName,type:e.type||'',text:(e.innerText||e.value||e.alt||'').trim().slice(0,300),aria:e.getAttribute('aria-label'),accept:e.accept||'',src:(e.currentSrc||e.src||'').slice(0,500),cls:e.className?.toString().slice(0,500),outer:e.outerHTML.slice(0,800)}))""")
+                  Path('output/controls.json').write_text(json.dumps(controls,ensure_ascii=False,indent=2),encoding='utf-8')
+                  print(json.dumps(controls,ensure_ascii=False,indent=2)[:50000])
+                  body=await page.locator('body').inner_text()
+                  Path('output/body.txt').write_text(body,encoding='utf-8')
+                  await page.screenshot(path='output/page.png',full_page=True)
+                  await b.close()
+          asyncio.run(main())
+          PY
+      - name: Upload UI probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lhm-ui-probe-v01
+          path: output/
+          retention-days: 7
+          compression-level: 0
